@@ -102,26 +102,46 @@ func NewPIAClient(username, password, region string, verbose bool, portForwardin
 	return &piaClient, nil
 }
 
-// GetToken
+// GetToken fetches an auth token from PIA's central API.
+// The previous approach of using regional meta servers broke when PIA migrated
+// to new-format server names (Server-XXXXX-Xa) that don't respond to /authv3/generateToken.
 func (p *PIAClient) GetToken() (string, error) {
-	server := p.getMetadataServerForRegion()
+	tokenURL := "https://www.privateinternetaccess.com/api/client/v2/token"
 
-	url := fmt.Sprintf("https://%v/authv3/generateToken", server.Cn)
+	formData := url.Values{}
+	formData.Set("username", p.username)
+	formData.Set("password", p.password)
 
-	// Send request
-	resp, err := p.executePIARequest(server, url, "")
-	if err != nil {
-		return "", errors.Wrap(err, "error executing request")
+	if p.verbose {
+		log.Print("Requesting token from central PIA API")
 	}
 
-	// Parse response
+	resp, err := http.PostForm(tokenURL, formData)
+	if err != nil {
+		return "", errors.Wrap(err, "error requesting token from PIA API")
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", errors.Wrap(err, "error reading token response")
+	}
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
 	var tokenResp struct {
 		Token string `json:"token"`
 	}
 
-	err = json.NewDecoder(resp.Body).Decode(&tokenResp)
+	err = json.Unmarshal(body, &tokenResp)
 	if err != nil {
 		return "", errors.Wrap(err, "error decoding token response")
+	}
+
+	if tokenResp.Token == "" {
+		return "", errors.New("received empty token from PIA API")
 	}
 
 	if p.verbose {
