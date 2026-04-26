@@ -98,6 +98,13 @@ func NewPIAClient(username, password, region string, verbose bool, portForwardin
 		return nil, err
 	}
 
+	if _, ok := piaClient.wireguardServers[Region(region)]; !ok {
+		if portForwarding {
+			return nil, fmt.Errorf("no servers found for region %q with port forwarding enabled", region)
+		}
+		return nil, fmt.Errorf("no servers found for region %q", region)
+	}
+
 	return &piaClient, nil
 }
 
