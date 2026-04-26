@@ -103,11 +103,7 @@ func (p *PIAWgGenerator) generateKeys() (string, string, error) {
 		log.Println("Private key: ", privateKey)
 	}
 
-	// Call host 'wg pubkey' to generate public key
 	publicKey := privateKey.PublicKey()
-	if err != nil {
-		return "", "", errors.Wrap(err, fmt.Sprintf("failed to generate public key: %v", publicKey.String()))
-	}
 	if p.verbose {
 		log.Println("Public key: ", publicKey)
 	}

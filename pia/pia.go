@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -196,6 +195,11 @@ func (p *PIAClient) getServerList() (piaServerList, error) {
 	if err != nil {
 		return piaServerList{}, err
 	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return piaServerList{}, fmt.Errorf("server list request failed with status %d", resp.StatusCode)
+	}
 
 	// Strip the base64 garbage
 	respBytes, err := io.ReadAll(resp.Body)
@@ -226,7 +230,7 @@ func (p *PIAClient) generateWireguardServerList(list piaServerList) (ServerList,
 		}
 
 		for _, server := range r.Servers.Wg {
-			servers[Region(r.ID)] = append(servers[Region(r.Name)], Server{
+			servers[Region(r.ID)] = append(servers[Region(r.ID)], Server{
 				Cn: server.Cn,
 				IP: server.IP,
 			})
@@ -254,7 +258,7 @@ func (p *PIAClient) generateMetadataServerList(list piaServerList) (ServerList, 
 		}
 
 		for _, server := range r.Servers.Meta {
-			servers[Region(r.ID)] = append(servers[Region(r.Name)], Server{
+			servers[Region(r.ID)] = append(servers[Region(r.ID)], Server{
 				Cn: server.Cn,
 				IP: server.IP,
 			})
@@ -367,9 +371,10 @@ func (p *PIAClient) downloadPIACertificate() error {
 	if err != nil {
 		return err
 	}
+	defer resp.Body.Close()
 
 	// Parse certificate
-	p.caCert, err = ioutil.ReadAll(resp.Body)
+	p.caCert, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
