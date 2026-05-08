@@ -39,10 +39,12 @@ Always branch hotfixes from `main`, never from a feature branch. See pia-wg-refr
 ## Key Components
 
 ### Files
-- `main.go` - CLI entrypoint (flags: `--outfile`, `--region`, `--verbose`, `--server`, `--port-forwarding`)
+
+- `main.go` - CLI entrypoint (flags: `--outfile`, `--region`, `--verbose`, `--server`, `--port-forwarding`, `--json`, `--metadata-file`)
 - `pia/pia.go` - PIA client: token generation, server selection, WireGuard key registration
-- `pia/wg.go` - WireGuard config template generation
-- `pia/wg_test.go` - Tests for config generation
+- `pia/wg.go` - WireGuard config template generation; `Generate()` returns `(string, Metadata, error)`
+- `pia/metadata.go` - `Metadata` struct and `buildMetadata()` helper
+- `pia/wg_test.go` - Tests for config generation and metadata output
 - `go.mod` / `go.sum` - Module definition (module path: `github.com/Ephemeral-Dust/pia-wg-config`)
 - `vendor/` - Vendored dependencies
 - `Dockerfile` - Multi-stage build: Go 1.23 Alpine builder → Alpine 3.20 runtime
@@ -56,8 +58,42 @@ Always branch hotfixes from `main`, never from a feature branch. See pia-wg-refr
 | `--verbose` | `-v` | `false` | Print verbose output |
 | `--server` | `-s` | `false` | Add server common name to config |
 | `--port-forwarding` | `-p` | `false` | Only use servers with port forwarding |
+| `--json` | `-j` | `false` | Print metadata JSON to stdout |
+| `--metadata-file` | — | (none) | Write metadata JSON to this file |
 
 Usage: `pia-wg-config -r ireland -s -p -o wg0.conf USERNAME PASSWORD`
+
+## Metadata Output (v1.2.0)
+
+`--json` and `--metadata-file` expose a stable machine-readable contract after a successful run.
+
+```json
+{
+  "region": "aus_perth",
+  "port_forward_enabled": true,
+  "wireguard_config": "/output/wg0.conf",
+  "endpoint_host": "146.70.x.x",
+  "endpoint_port": 1337,
+  "port_forward_gateway": "https://10.4.128.1:19999"
+}
+```
+
+| Field | Source | Notes |
+| ----- | ------ | ----- |
+| `region` | `--region` flag | Resolved PIA region ID |
+| `port_forward_enabled` | `--port-forwarding` flag | Whether PF-capable server was selected |
+| `wireguard_config` | `--outfile` flag | Path of generated config; omitted if no `--outfile` |
+| `endpoint_host` | PIA `/addKey` `server_ip` | WireGuard endpoint IP |
+| `endpoint_port` | PIA `/addKey` `server_port` | WireGuard endpoint port |
+| `port_forward_gateway` | PIA `/addKey` `server_vip` | Authoritative PF gateway URL; omitted if no `server_vip` |
+
+**`port_forward_gateway`** is derived exclusively from `server_vip` in the PIA API response — never inferred from the WireGuard `Address` field or other heuristics. If `--port-forwarding` is set and `server_vip` is absent, the run exits non-zero.
+
+Key schema invariants:
+
+- Keys are stable — no renaming without a version bump
+- Never contains private key, token, username, or password
+- `wireguard_config_path` is `omitempty` — absent when no `--outfile` was given
 
 ## Key Fix: Central Token API (v1.0.6)
 

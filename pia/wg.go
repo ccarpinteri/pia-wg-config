@@ -13,18 +13,22 @@ import (
 )
 
 type PIAWgGenerator struct {
-	pia        PIAWgClient
-	verbose    bool
-	serverName bool
-	privatekey string
-	publickey  string
+	pia            PIAWgClient
+	verbose        bool
+	serverName     bool
+	privatekey     string
+	publickey      string
+	region         string
+	portForwarding bool
 }
 
 type PIAWgGeneratorConfig struct {
-	Verbose    bool
-	ServerName bool
-	PrivateKey string
-	PublicKey  string
+	Verbose        bool
+	ServerName     bool
+	PrivateKey     string
+	PublicKey      string
+	Region         string
+	PortForwarding bool
 }
 
 type templateConfig struct {
@@ -40,53 +44,56 @@ type templateConfig struct {
 
 func NewPIAWgGenerator(pia PIAWgClient, config PIAWgGeneratorConfig) *PIAWgGenerator {
 	return &PIAWgGenerator{
-		pia:        pia,
-		verbose:    config.Verbose,
-		serverName: config.ServerName,
-		privatekey: config.PrivateKey,
-		publickey:  config.PublicKey,
+		pia:            pia,
+		verbose:        config.Verbose,
+		serverName:     config.ServerName,
+		privatekey:     config.PrivateKey,
+		publickey:      config.PublicKey,
+		region:         config.Region,
+		portForwarding: config.PortForwarding,
 	}
 }
 
-// Generate
-func (p *PIAWgGenerator) Generate() (string, error) {
-	// Get PIA token
+// Generate produces the WireGuard config string and structured metadata.
+func (p *PIAWgGenerator) Generate() (string, Metadata, error) {
 	if p.verbose {
 		log.Println("Getting PIA token")
 	}
 	token, err := p.pia.GetToken()
 	if err != nil {
-		return "", errors.Wrap(err, "error getting PIA token")
+		return "", Metadata{}, errors.Wrap(err, "error getting PIA token")
 	}
 
-	// Generate Wireguard keys
 	if p.verbose {
 		log.Println("Generating Wireguard keys")
 	}
 	privatekey, publickey, err := p.generateKeys()
 	if err != nil {
-		return "", errors.Wrap(err, "error generating Wireguard keys")
+		return "", Metadata{}, errors.Wrap(err, "error generating Wireguard keys")
 	}
 
-	// Add Wireguard publickey to PIA account
 	if p.verbose {
 		log.Println("Adding Wireguard publickey to PIA account")
 	}
 	key, err := p.pia.AddKey(token, publickey)
 	if err != nil {
-		return "", errors.Wrap(err, "error adding Wireguard publickey to PIA account")
+		return "", Metadata{}, errors.Wrap(err, "error adding Wireguard publickey to PIA account")
 	}
 
-	// Generate Wireguard config
 	if p.verbose {
 		log.Println("Generating Wireguard config")
 	}
 	config, err := p.generateConfig(key, privatekey)
 	if err != nil {
-		return "", errors.Wrap(err, "error generating Wireguard config")
+		return "", Metadata{}, errors.Wrap(err, "error generating Wireguard config")
 	}
 
-	return config, nil
+	metadata, err := buildMetadata(p.region, p.portForwarding, key)
+	if err != nil {
+		return "", Metadata{}, err
+	}
+
+	return config, metadata, nil
 }
 
 // generateKeys
