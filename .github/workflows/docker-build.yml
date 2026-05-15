@@ -62,8 +62,61 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: pia-wg-config ${{ github.ref_name }}
           body: |
-            Docker image pushed as:
-              - `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}`
-              - `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest`
+            ## What's New
+
+            ### Resilient Server-List Fetching
+
+            `pia-wg-config` now retries transient server-list fetch failures internally,
+            making container startup substantially more reliable on Docker bridge networking
+            where `serverlist.piaservers.net` is intermittently unreachable.
+
+            **Default retry behavior (no new flags needed):**
+            - Up to 5 attempts with fixed backoff: 2s, 5s, 10s, 20s, 30s
+            - Retries on: connect timeout, TLS timeout, DNS failure, HTTP 429/5xx
+            - Does not retry: invalid credentials, invalid region, malformed responses
+
+            ### Optional Server-List Cache
+
+            Cache the PIA server-list JSON on a persistent volume so config generation
+            can proceed even when the server-list endpoint is unreachable:
+
+            ```bash
+            pia-wg-config -r ca_toronto -p -o wg0.conf \
+              --serverlist-cache /state/cache/pia-serverlist-v6.json \
+              --serverlist-cache-ttl 24h \
+              --serverlist-cache-max-age 168h \
+              USERNAME PASSWORD
+            ```
+
+            Cache policy:
+            - Age ≤ TTL → use cache, no network request
+            - TTL < age ≤ max-age → try to refresh; fall back to stale on failure with a warning
+            - Age > max-age → must refresh; fails clearly if unreachable
+
+            Force a fresh fetch even when cache is fresh:
+            ```bash
+            pia-wg-config --serverlist-force-refresh ...
+            ```
+
+            ### New CLI Flags
+
+            | Flag | Default | Description |
+            |---|---|---|
+            | `--serverlist-cache PATH` | (none) | Path to server-list cache file |
+            | `--serverlist-cache-ttl DURATION` | `24h` | Max age to use cache without refresh |
+            | `--serverlist-cache-max-age DURATION` | `168h` | Max age before cache is treated as invalid |
+            | `--serverlist-force-refresh` | `false` | Force fresh server-list fetch |
+            | `--serverlist-fetch-retries N` | `5` | Max server-list fetch attempts |
+
+            ### Metadata Contract Unchanged
+
+            The `--json` output schema is identical to v1.2.0. No new fields added.
+
+            ### Docker
+
+            ```
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
