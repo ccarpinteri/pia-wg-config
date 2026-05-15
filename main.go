@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/Ephemeral-Dust/pia-wg-config/pia"
 	cli "github.com/urfave/cli/v2"
@@ -56,6 +57,30 @@ func main() {
 				Name:  "metadata-file",
 				Usage: "Write machine-readable metadata as JSON to this file",
 			},
+			&cli.StringFlag{
+				Name:  "serverlist-cache",
+				Usage: "Path to server-list cache file",
+			},
+			&cli.StringFlag{
+				Name:  "serverlist-cache-ttl",
+				Value: "24h",
+				Usage: "Max age to use cache without refresh (e.g. 24h, 30m)",
+			},
+			&cli.StringFlag{
+				Name:  "serverlist-cache-max-age",
+				Value: "168h",
+				Usage: "Max age before cache is treated as invalid (e.g. 168h)",
+			},
+			&cli.BoolFlag{
+				Name:  "serverlist-force-refresh",
+				Value: false,
+				Usage: "Force fresh server-list fetch even if cache is fresh",
+			},
+			&cli.IntFlag{
+				Name:  "serverlist-fetch-retries",
+				Value: 5,
+				Usage: "Max server-list fetch attempts",
+			},
 		},
 	}
 
@@ -75,10 +100,26 @@ func defaultAction(c *cli.Context) error {
 	printJSON := c.Bool("json")
 	metadataFile := c.String("metadata-file")
 
+	cacheTTL, err := time.ParseDuration(c.String("serverlist-cache-ttl"))
+	if err != nil {
+		return fmt.Errorf("invalid --serverlist-cache-ttl: %w", err)
+	}
+	cacheMaxAge, err := time.ParseDuration(c.String("serverlist-cache-max-age"))
+	if err != nil {
+		return fmt.Errorf("invalid --serverlist-cache-max-age: %w", err)
+	}
+	serverListOpts := pia.ServerListOptions{
+		CachePath:    c.String("serverlist-cache"),
+		CacheTTL:     cacheTTL,
+		CacheMaxAge:  cacheMaxAge,
+		ForceRefresh: c.Bool("serverlist-force-refresh"),
+		FetchRetries: c.Int("serverlist-fetch-retries"),
+	}
+
 	if verbose {
 		log.Print("Creating PIA client")
 	}
-	piaClient, err := pia.NewPIAClient(username, password, region, verbose, portForwarding)
+	piaClient, err := pia.NewPIAClient(username, password, region, verbose, portForwarding, serverListOpts)
 	if err != nil {
 		return err
 	}

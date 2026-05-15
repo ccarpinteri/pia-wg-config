@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/benburkert/dns"
@@ -37,6 +36,7 @@ type PIAClient struct {
 	verbose          bool
 	portForwarding   bool
 	caCert           []byte
+	serverListOpts   ServerListOptions
 }
 
 type piaServerList struct {
@@ -71,14 +71,15 @@ type Server struct {
 	IP string
 }
 
-// NewPIAClient creates a new PIA client for with the list of servers populated
-func NewPIAClient(username, password, region string, verbose bool, portForwarding bool) (*PIAClient, error) {
+// NewPIAClient creates a new PIA client with the list of servers populated.
+func NewPIAClient(username, password, region string, verbose bool, portForwarding bool, opts ServerListOptions) (*PIAClient, error) {
 	piaClient := PIAClient{
 		username:       username,
 		password:       password,
 		region:         region,
 		verbose:        verbose,
 		portForwarding: portForwarding,
+		serverListOpts: opts,
 	}
 
 	// Get list of servers
@@ -194,37 +195,13 @@ func (p *PIAClient) getMetadataServerForRegion() Server {
 	return p.metadataServers[Region(p.region)][0]
 }
 
-// getSeverList returns a list of servers from the PIA API
+// getServerList fetches the PIA server list using the configured retry and cache policy.
 func (p *PIAClient) getServerList() (piaServerList, error) {
-	var serverList piaServerList
-
-	resp, err := http.Get("https://serverlist.piaservers.net/vpninfo/servers/v6")
+	data, err := fetchServerListWithPolicy(p.serverListOpts, p.verbose)
 	if err != nil {
 		return piaServerList{}, err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return piaServerList{}, fmt.Errorf("server list request failed with status %d", resp.StatusCode)
-	}
-
-	// Strip the base64 garbage
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return piaServerList{}, err
-	}
-	respString := string(respBytes)
-	lastBracketInd := strings.LastIndex(respString, "}")
-	safeJSON := respString[:lastBracketInd+1]
-
-	// Parse the JSON
-	err = json.Unmarshal([]byte(safeJSON), &serverList)
-	if err != nil {
-		return piaServerList{}, err
-	}
-
-	// Return list of servers
-	return serverList, nil
+	return parseServerList(data)
 }
 
 // generateWireguardServerList
