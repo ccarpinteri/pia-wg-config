@@ -45,7 +45,7 @@ Always branch hotfixes from `main`, never from a feature branch. See pia-wg-refr
 - `pia/wg.go` - WireGuard config template generation; `Generate()` returns `(string, Metadata, error)`
 - `pia/metadata.go` - `Metadata` struct and `buildMetadata()` helper
 - `pia/wg_test.go` - Tests for config generation and metadata output
-- `go.mod` / `go.sum` - Module definition (module path: `github.com/Ephemeral-Dust/pia-wg-config`)
+- `go.mod` / `go.sum` - Module definition (module path: `github.com/ccarpinteri/pia-wg-config`)
 - `vendor/` - Vendored dependencies
 - `Dockerfile` - Multi-stage build: Go 1.23 Alpine builder → Alpine 3.20 runtime
 

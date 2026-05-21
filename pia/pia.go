@@ -48,6 +48,7 @@ type piaServerList struct {
 		DNS         string `json:"dns"`
 		PortForward bool   `json:"port_forward"`
 		Geo         bool   `json:"geo"`
+		Offline     bool   `json:"offline"`
 		Servers     struct {
 			Meta []Server `json:"meta"`
 			Wg   []Server `json:"wg"`
@@ -69,6 +70,16 @@ type AddKeyResult struct {
 type Server struct {
 	Cn string
 	IP string
+}
+
+// RegionInfo is the public representation of a PIA region, returned by ListRegions.
+type RegionInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Country     string `json:"country"`
+	PortForward bool   `json:"port_forward"`
+	Geo         bool   `json:"geo"`
+	Offline     bool   `json:"offline"`
 }
 
 // NewPIAClient creates a new PIA client with the list of servers populated.

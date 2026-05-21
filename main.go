@@ -7,15 +7,20 @@ import (
 	"os"
 	"time"
 
-	"github.com/Ephemeral-Dust/pia-wg-config/pia"
+	"github.com/ccarpinteri/pia-wg-config/pia"
 	cli "github.com/urfave/cli/v2"
 )
 
 func main() {
 	app := &cli.App{
-		Name:   "pia-wg-config",
-		Usage:  "generate a wireguard config for private internet access",
-		Action: defaultAction,
+		Name:  "pia-wg-config",
+		Usage: "generate a wireguard config for private internet access",
+		Action: func(c *cli.Context) error {
+			if c.Bool("list-regions") {
+				return listRegionsAction(c)
+			}
+			return defaultAction(c)
+		},
 
 		Flags: []cli.Flag{
 			&cli.StringFlag{
@@ -81,12 +86,69 @@ func main() {
 				Value: 5,
 				Usage: "Max server-list fetch attempts",
 			},
+			&cli.BoolFlag{
+				Name:  "list-regions",
+				Value: false,
+				Usage: "List all available PIA regions and exit (no credentials required)",
+			},
 		},
 	}
 
 	if err := app.Run(os.Args); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func listRegionsAction(c *cli.Context) error {
+	verbose := c.Bool("verbose")
+	printJSON := c.Bool("json")
+	portForwarding := c.Bool("port-forwarding")
+
+	cacheTTL, err := time.ParseDuration(c.String("serverlist-cache-ttl"))
+	if err != nil {
+		return fmt.Errorf("invalid --serverlist-cache-ttl: %w", err)
+	}
+	cacheMaxAge, err := time.ParseDuration(c.String("serverlist-cache-max-age"))
+	if err != nil {
+		return fmt.Errorf("invalid --serverlist-cache-max-age: %w", err)
+	}
+	opts := pia.ServerListOptions{
+		CachePath:    c.String("serverlist-cache"),
+		CacheTTL:     cacheTTL,
+		CacheMaxAge:  cacheMaxAge,
+		ForceRefresh: c.Bool("serverlist-force-refresh"),
+		FetchRetries: c.Int("serverlist-fetch-retries"),
+	}
+
+	regions, err := pia.ListRegions(opts, verbose)
+	if err != nil {
+		return err
+	}
+
+	if portForwarding {
+		filtered := regions[:0]
+		for _, r := range regions {
+			if r.PortForward {
+				filtered = append(filtered, r)
+			}
+		}
+		regions = filtered
+	}
+
+	if printJSON {
+		b, err := json.MarshalIndent(regions, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stdout, string(b))
+		return nil
+	}
+
+	for _, r := range regions {
+		fmt.Fprintf(os.Stdout, "%-35s %-35s country=%-4s port-forward=%-5v geo=%-5v offline=%v\n",
+			r.ID, r.Name, r.Country, r.PortForward, r.Geo, r.Offline)
+	}
+	return nil
 }
 
 func defaultAction(c *cli.Context) error {

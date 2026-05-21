@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -202,6 +203,37 @@ func parseServerList(data []byte) (piaServerList, error) {
 		return piaServerList{}, fmt.Errorf("server list parsed but contains no regions")
 	}
 	return sl, nil
+}
+
+// ListRegions fetches the PIA server list and returns region metadata sorted by country then ID.
+// No authentication is required. Supports the same cache/retry options as NewPIAClient.
+func ListRegions(opts ServerListOptions, verbose bool) ([]RegionInfo, error) {
+	data, err := fetchServerListWithPolicy(opts, verbose)
+	if err != nil {
+		return nil, err
+	}
+	sl, err := parseServerList(data)
+	if err != nil {
+		return nil, err
+	}
+	regions := make([]RegionInfo, 0, len(sl.Regions))
+	for _, r := range sl.Regions {
+		regions = append(regions, RegionInfo{
+			ID:          r.ID,
+			Name:        r.Name,
+			Country:     r.Country,
+			PortForward: r.PortForward,
+			Geo:         r.Geo,
+			Offline:     r.Offline,
+		})
+	}
+	sort.Slice(regions, func(i, j int) bool {
+		if regions[i].Country != regions[j].Country {
+			return regions[i].Country < regions[j].Country
+		}
+		return regions[i].ID < regions[j].ID
+	})
+	return regions, nil
 }
 
 // fetchServerListWithPolicy implements the cache state machine described in the brief.
