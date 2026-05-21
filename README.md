@@ -33,6 +33,52 @@ You can now use `wg0.conf` to connect using your favorite WireGuard client.
 | `--verbose` | `-v` | `false` | Print verbose output |
 | `--server` | `-s` | `false` | Add server common name to the config (required for Gluetun port forwarding) |
 | `--port-forwarding` | `-p` | `false` | Only use servers that support port forwarding |
+| `--json` | `-j` | `false` | Print machine-readable metadata as JSON to stdout after a successful run |
+| `--metadata-file` | | | Write machine-readable metadata as JSON to this file |
+| `--list-regions` | | `false` | List all available PIA regions and exit (no credentials required) |
+| `--serverlist-cache` | | | Path to server-list cache file |
+| `--serverlist-cache-ttl` | | `24h` | Max age to use cache without refresh |
+| `--serverlist-cache-max-age` | | `168h` | Max age before cache is treated as invalid |
+| `--serverlist-force-refresh` | | `false` | Force fresh server-list fetch even if cache is fresh |
+| `--serverlist-fetch-retries` | | `5` | Max server-list fetch attempts |
+
+## Regions
+
+Use `--list-regions` to discover available region IDs without credentials:
+
+```bash
+# List all regions
+pia-wg-config --list-regions
+
+# Filter to a specific country
+pia-wg-config --list-regions | grep "country=AU"
+
+# List only port-forwarding capable regions, as JSON
+pia-wg-config --list-regions -p --json
+```
+
+Pass any region ID as the `-r` value, e.g. `ireland`, `de-frankfurt`, `us_chicago`. Not all regions support port forwarding — if `-p` is set and the region has no port-forwarding servers, the tool exits with a clear error.
+
+## Metadata Output
+
+After a successful config generation, `--json` and `--metadata-file` expose machine-readable metadata:
+
+```bash
+pia-wg-config -r ireland -s -p -o wg0.conf --json USERNAME PASSWORD
+```
+
+```json
+{
+  "region": "ireland",
+  "port_forward_enabled": true,
+  "wireguard_config": "wg0.conf",
+  "endpoint_host": "1.2.3.4",
+  "endpoint_port": 1337,
+  "port_forward_gateway": "https://10.x.x.x:19999"
+}
+```
+
+`--metadata-file` writes the same JSON to a file instead of (or in addition to) stdout.
 
 ## Gluetun
 
@@ -45,7 +91,3 @@ See [pia-wg-refresh](https://github.com/ccarpinteri/pia-wg-refresh) for a Docker
 Based on the [manual-connections](https://github.com/pia-foss/manual-connections) scripts provided by Private Internet Access.
 
 Go was chosen for stability and portability. `pia-wg-config` is self-contained and does not require any external files.
-
-## Regions
-
-Pass any PIA region ID as the `-r` value, e.g. `ireland`, `de-frankfurt`, `us_chicago`. Not all regions support port forwarding — if `-p` is set and the region has no port-forwarding servers, the tool exits with a clear error.
