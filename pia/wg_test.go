@@ -1,7 +1,9 @@
 package pia
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"strings"
 	"testing"
 )
@@ -120,6 +122,25 @@ func TestPIAWgGenerator_generateKeys(t *testing.T) {
 	}
 	if priv == "" || pub == "" {
 		t.Error("generateKeys() returned empty key(s)")
+	}
+}
+
+func TestPIAWgGeneratorGenerateKeysDoesNotLogPrivateKey(t *testing.T) {
+	var logs bytes.Buffer
+	original := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(original) })
+
+	p := &PIAWgGenerator{pia: &PIAClientMock{}, verbose: true}
+	privateKey, _, err := p.generateKeys()
+	if err != nil {
+		t.Fatalf("generateKeys() error = %v", err)
+	}
+	if strings.Contains(logs.String(), privateKey) {
+		t.Fatal("verbose output contains generated private key")
+	}
+	if logs.String() == "" {
+		t.Fatal("verbose output unexpectedly empty")
 	}
 }
 

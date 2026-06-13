@@ -123,9 +123,13 @@ func NewPIAClient(username, password, region string, verbose bool, portForwardin
 // GetToken fetches an auth token from PIA's central API.
 // The previous approach of using regional meta servers broke when PIA migrated
 // to new-format server names (Server-XXXXX-Xa) that don't respond to /authv3/generateToken.
-func (p *PIAClient) GetToken() (string, error) {
-	tokenURL := "https://www.privateinternetaccess.com/api/client/v2/token"
+const tokenURL = "https://www.privateinternetaccess.com/api/client/v2/token"
 
+func (p *PIAClient) GetToken() (string, error) {
+	return p.getToken(tokenURL)
+}
+
+func (p *PIAClient) getToken(tokenURL string) (string, error) {
 	formData := url.Values{}
 	formData.Set("username", p.username)
 	formData.Set("password", p.password)
@@ -160,10 +164,6 @@ func (p *PIAClient) GetToken() (string, error) {
 
 	if tokenResp.Token == "" {
 		return "", errors.New("received empty token from PIA API")
-	}
-
-	if p.verbose {
-		log.Print("Got token: ", tokenResp.Token)
 	}
 
 	return tokenResp.Token, nil

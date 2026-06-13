@@ -106,9 +106,6 @@ func (p *PIAWgGenerator) generateKeys() (string, string, error) {
 	if err != nil {
 		return "", "", errors.Wrap(err, fmt.Sprintf("failed to generate private key: %v", privateKey.String()))
 	}
-	if p.verbose {
-		log.Println("Private key: ", privateKey)
-	}
 
 	publicKey := privateKey.PublicKey()
 	if p.verbose {
