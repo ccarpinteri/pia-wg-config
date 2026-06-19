@@ -37,6 +37,11 @@ You can now use `wg0.conf` to connect using your favorite WireGuard client.
 | `--metadata-file` | | | Write machine-readable metadata as JSON to this file |
 | `--list-regions` | | `false` | List all available PIA regions and exit (no credentials required) |
 | `--credentials-fd` | | | Read credentials from an inherited file descriptor |
+| `--constrained-plan-fd` | | | Read an experimental constrained generation plan from an inherited file descriptor |
+| `--public-ca-fd` | | | Read the constrained token API CA bundle from an inherited file descriptor |
+| `--regional-ca-fd` | | | Read the constrained regional API CA bundle from an inherited file descriptor |
+| `--config-fd` | | | Write constrained WireGuard config output to an inherited file descriptor |
+| `--result-fd` | | | Write constrained result JSON to an inherited file descriptor |
 | `--serverlist-cache` | | | Path to server-list cache file |
 | `--serverlist-cache-ttl` | | `24h` | Max age to use cache without refresh |
 | `--serverlist-cache-max-age` | | `168h` | Max age before cache is treated as invalid |
@@ -60,6 +65,24 @@ FD mode and positional credentials are mutually exclusive. FD mode does not
 fall back to positional or environment credentials. The caller owns descriptor
 provenance, writer closure, invocation timeout, cancellation, and child
 reaping.
+
+### Experimental constrained mode
+
+The `--constrained-plan-fd`, `--public-ca-fd`, `--regional-ca-fd`,
+`--config-fd`, and `--result-fd` flags are for reviewed automation that
+launches `pia-wg-config` with inherited Linux pipe descriptors. This mode is
+PIA-only and does not use the ordinary region lookup, server-list cache,
+metadata, stdout config output, positional credentials, or system certificate
+trust path.
+
+Constrained mode requires all of these descriptors plus `--credentials-fd`. It
+rejects positional arguments, ordinary generation flags, unknown flags, and
+duplicate flags. Results are written as bounded JSON to `--result-fd`; on
+failure the result contains only `schema`, `status`, and `failure_class`.
+
+This mode is intentionally not the general CLI interface. It exists for a
+separately reviewed launcher that supplies the plan, credentials, CA bundles,
+output pipe, and lifecycle controls.
 
 ## Regions
 

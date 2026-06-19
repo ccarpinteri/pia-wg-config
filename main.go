@@ -12,10 +12,24 @@ import (
 )
 
 func main() {
+	if rawConstrainedRequested(os.Args[1:]) {
+		if err := constrainedActionFromRawArgs(os.Args[1:]); err != nil {
+			if exitErr, ok := err.(cli.ExitCoder); ok {
+				fmt.Fprintln(os.Stderr, err.Error())
+				os.Exit(exitErr.ExitCode())
+			}
+			log.Fatal(err)
+		}
+		return
+	}
+
 	app := &cli.App{
 		Name:  "pia-wg-config",
 		Usage: "generate a wireguard config for private internet access",
 		Action: func(c *cli.Context) error {
+			if constrainedRequested(c) {
+				return constrainedAction(c)
+			}
 			if c.Bool("list-regions") {
 				return listRegionsAction(c)
 			}
@@ -96,10 +110,39 @@ func main() {
 				Value: -1,
 				Usage: "Read credentials from an inherited file descriptor",
 			},
+			&cli.IntFlag{
+				Name:  "constrained-plan-fd",
+				Value: -1,
+				Usage: "Read constrained generation plan from an inherited file descriptor",
+			},
+			&cli.IntFlag{
+				Name:  "public-ca-fd",
+				Value: -1,
+				Usage: "Read public API CA bundle from an inherited file descriptor",
+			},
+			&cli.IntFlag{
+				Name:  "regional-ca-fd",
+				Value: -1,
+				Usage: "Read regional API CA bundle from an inherited file descriptor",
+			},
+			&cli.IntFlag{
+				Name:  "config-fd",
+				Value: -1,
+				Usage: "Write constrained WireGuard config to an inherited file descriptor",
+			},
+			&cli.IntFlag{
+				Name:  "result-fd",
+				Value: -1,
+				Usage: "Write constrained result JSON to an inherited file descriptor",
+			},
 		},
 	}
 
 	if err := app.Run(os.Args); err != nil {
+		if exitErr, ok := err.(cli.ExitCoder); ok {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(exitErr.ExitCode())
+		}
 		log.Fatal(err)
 	}
 }
