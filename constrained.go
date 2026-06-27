@@ -520,10 +520,31 @@ func rejectDuplicateLongFlags(args []string) error {
 }
 
 func readLimitedFile(file *os.File, limit int64, timeout time.Duration) ([]byte, error) {
-	if err := file.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+	if err := file.SetReadDeadline(time.Now().Add(timeout)); err == nil {
+		defer file.SetReadDeadline(time.Time{})
+		return readLimitedFileBody(file, limit)
+	} else if !unsupportedDeadline(err) {
 		return nil, err
 	}
-	defer file.SetReadDeadline(time.Time{})
+	type result struct {
+		body []byte
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		body, err := readLimitedFileBody(file, limit)
+		done <- result{body: body, err: err}
+	}()
+	select {
+	case result := <-done:
+		return result.body, result.err
+	case <-time.After(timeout):
+		_ = file.Close()
+		return nil, os.ErrDeadlineExceeded
+	}
+}
+
+func readLimitedFileBody(file *os.File, limit int64) ([]byte, error) {
 	raw, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		return nil, err
@@ -538,10 +559,26 @@ func writeLimitedFile(file *os.File, body []byte, limit int, timeout time.Durati
 	if len(body) > limit {
 		return errors.New("output exceeds limit")
 	}
-	if err := file.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+	if err := file.SetWriteDeadline(time.Now().Add(timeout)); err == nil {
+		defer file.SetWriteDeadline(time.Time{})
+		return writeLimitedFileBody(file, body)
+	} else if !unsupportedDeadline(err) {
 		return err
 	}
-	defer file.SetWriteDeadline(time.Time{})
+	done := make(chan error, 1)
+	go func() {
+		done <- writeLimitedFileBody(file, body)
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		_ = file.Close()
+		return os.ErrDeadlineExceeded
+	}
+}
+
+func writeLimitedFileBody(file *os.File, body []byte) error {
 	n, err := file.Write(body)
 	if err != nil {
 		return err
@@ -550,6 +587,26 @@ func writeLimitedFile(file *os.File, body []byte, limit int, timeout time.Durati
 		return io.ErrShortWrite
 	}
 	return nil
+}
+
+func setConstrainedReadDeadline(file *os.File, deadline time.Time) error {
+	err := file.SetReadDeadline(deadline)
+	if unsupportedDeadline(err) {
+		return nil
+	}
+	return err
+}
+
+func setConstrainedWriteDeadline(file *os.File, deadline time.Time) error {
+	err := file.SetWriteDeadline(deadline)
+	if unsupportedDeadline(err) {
+		return nil
+	}
+	return err
+}
+
+func unsupportedDeadline(err error) bool {
+	return errors.Is(err, os.ErrNoDeadline) || (err != nil && strings.Contains(err.Error(), "file type does not support deadline"))
 }
 
 func writeInvalidInvocationFailureFD(fd int) error {

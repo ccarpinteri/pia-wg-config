@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	cli "github.com/urfave/cli/v2"
 )
@@ -20,6 +21,22 @@ func TestValidateConstrainedDescriptorAcceptsPipeDirection(t *testing.T) {
 	}
 	if err := validateConstrainedDescriptor(writer, constrainedFDWrite); err != nil {
 		t.Fatalf("write pipe validation returned error: %v", err)
+	}
+}
+
+func TestConstrainedDeadlineHelpersTolerateNoDeadlinePipes(t *testing.T) {
+	reader, writer := testPipe(t)
+	if err := reader.SetReadDeadline(time.Now().Add(time.Second)); err == nil {
+		t.Skip("pipe deadlines are supported in this environment")
+	}
+	if err := writer.SetWriteDeadline(time.Now().Add(time.Second)); err == nil {
+		t.Skip("pipe deadlines are supported in this environment")
+	}
+	if err := setConstrainedReadDeadline(reader, time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("read deadline helper rejected no-deadline pipe: %v", err)
+	}
+	if err := setConstrainedWriteDeadline(writer, time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("write deadline helper rejected no-deadline pipe: %v", err)
 	}
 }
 
