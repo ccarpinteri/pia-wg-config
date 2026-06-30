@@ -170,6 +170,18 @@ func TestParseConstrainedPlanAcceptsCompletePlan(t *testing.T) {
 	}
 }
 
+func TestParseConstrainedPlanAcceptsRealPIARegistrationCommonName(t *testing.T) {
+	body := `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"158.173.66.79","tls_common_name":"Server-11736-3a"},"excluded_wireguard_endpoint":{"ipv4":"158.173.66.79","udp_port":1337}}`
+
+	plan, err := parseConstrainedPlan([]byte(body))
+	if err != nil {
+		t.Fatalf("parseConstrainedPlan returned error: %v", err)
+	}
+	if plan.RegistrationCandidate.TLSCommonName != "Server-11736-3a" {
+		t.Fatalf("candidate CN = %q, want real PIA common name", plan.RegistrationCandidate.TLSCommonName)
+	}
+}
+
 func TestParseConstrainedPlanRejectsStrictJSONViolations(t *testing.T) {
 	tests := map[string]string{
 		"missing schema":   `{"region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"example.privateinternetaccess.com"}}`,
@@ -181,6 +193,12 @@ func TestParseConstrainedPlanRejectsStrictJSONViolations(t *testing.T) {
 		"bad region":       `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus/perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"example.privateinternetaccess.com"}}`,
 		"bad token ip":     `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"2001:db8::1","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"example.privateinternetaccess.com"}}`,
 		"bad cn":           `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"127.0.0.1"}}`,
+		"empty cn":         `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":""}}`,
+		"space cn":         `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"Server 11736"}}`,
+		"slash cn":         `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"Server/11736"}}`,
+		"colon cn":         `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"Server:11736"}}`,
+		"at cn":            `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"Server@11736"}}`,
+		"overlong cn":      `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"` + strings.Repeat("a", 254) + `"}}`,
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {

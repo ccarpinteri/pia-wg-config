@@ -1033,7 +1033,7 @@ func validConstrainedRegion(value string) bool {
 }
 
 func validTLSCommonName(value string) bool {
-	if value == "" || len(value) > 253 || net.ParseIP(value) != nil || !validDNSName(value) {
+	if value == "" || len(value) > 253 || net.ParseIP(value) != nil {
 		return false
 	}
 	for _, r := range value {

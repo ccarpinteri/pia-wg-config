@@ -56,6 +56,31 @@ func TestConstrainedHTTPClientDialsSuppliedIPv4WithoutDNSProxyOrHTTP2(t *testing
 	}
 }
 
+func TestConstrainedHTTPClientAcceptsRealPIARegistrationCommonName(t *testing.T) {
+	cert, pool := testServerCertificate(t, "Server-11736-3a")
+	server := testTLSServer(t, cert, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+
+	host, rawPort, err := net.SplitHostPort(server.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := constrainedHTTPClient(host, port, "Server-11736-3a", pool, 5*time.Second)
+	resp, err := client.Get("https://Server-11736-3a/")
+	if err != nil {
+		t.Fatalf("client.Get returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
 func TestConstrainedHTTPClientDoesNotRetryFailedDial(t *testing.T) {
 	cert, pool := testServerCertificate(t, "example.privateinternetaccess.com")
 	server := testTLSServer(t, cert, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
