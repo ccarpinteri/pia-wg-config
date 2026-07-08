@@ -821,9 +821,12 @@ func constrainedTokenRequest(ctx context.Context, destinationIPv4 string, creds 
 		return "", classInternalFailure
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	client := constrainedHTTPClient(destinationIPv4, 443, "www.privateinternetaccess.com", roots, 15*time.Second)
+	client := constrainedHTTPClient(destinationIPv4, 443, "www.privateinternetaccess.com", roots, 15*time.Second, false)
 	resp, err := client.Do(req)
 	if err != nil {
+		if isConstrainedTrustError(err) {
+			return "", classInvalidTrust
+		}
 		return "", classifyNetworkError(ctx, classTokenFailed)
 	}
 	defer resp.Body.Close()
@@ -852,9 +855,12 @@ func constrainedAddKeyRequest(ctx context.Context, candidate constrainedRegistra
 	if err != nil {
 		return constrainedAddKeyResult{}, classInternalFailure
 	}
-	client := constrainedHTTPClient(candidate.IPv4, 1337, candidate.TLSCommonName, roots, 15*time.Second)
+	client := constrainedHTTPClient(candidate.IPv4, 1337, candidate.TLSCommonName, roots, 15*time.Second, true)
 	resp, err := client.Do(req)
 	if err != nil {
+		if isConstrainedTrustError(err) {
+			return constrainedAddKeyResult{}, classInvalidTrust
+		}
 		return constrainedAddKeyResult{}, classifyNetworkError(ctx, classAddKeyFailed)
 	}
 	defer resp.Body.Close()
@@ -872,7 +878,7 @@ func constrainedAddKeyRequest(ctx context.Context, candidate constrainedRegistra
 	return result, ""
 }
 
-func constrainedHTTPClient(ip string, port int, serverName string, roots *x509.CertPool, timeout time.Duration) *http.Client {
+func constrainedHTTPClient(ip string, port int, serverName string, roots *x509.CertPool, timeout time.Duration, allowCommonNameIdentity bool) *http.Client {
 	dialCount := 0
 	transport := &http.Transport{
 		Proxy:               nil,
@@ -883,9 +889,15 @@ func constrainedHTTPClient(ip string, port int, serverName string, roots *x509.C
 		TLSNextProto:        map[string]func(string, *tls.Conn) http.RoundTripper{},
 		TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
-			RootCAs:    roots,
 			ServerName: serverName,
-			NextProtos: []string{"http/1.1"},
+			// The PIA registration endpoint uses server-list registration names that
+			// may be CN-only identities rather than DNS SANs. We still verify the
+			// certificate chain and exact intended registration identity below.
+			InsecureSkipVerify: true,
+			NextProtos:         []string{"http/1.1"},
+			VerifyConnection: func(state tls.ConnectionState) error {
+				return verifyConstrainedTLSConnection(state, serverName, roots, allowCommonNameIdentity)
+			},
 		},
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			if network != "tcp" && network != "tcp4" {
@@ -906,6 +918,53 @@ func constrainedHTTPClient(ip string, port int, serverName string, roots *x509.C
 			return http.ErrUseLastResponse
 		},
 	}
+}
+
+type constrainedTrustError struct {
+	err error
+}
+
+func (e constrainedTrustError) Error() string {
+	return e.err.Error()
+}
+
+func (e constrainedTrustError) Unwrap() error {
+	return e.err
+}
+
+func verifyConstrainedTLSConnection(state tls.ConnectionState, serverName string, roots *x509.CertPool, allowCommonNameIdentity bool) error {
+	if roots == nil {
+		return constrainedTrustError{err: errors.New("trusted CA bundle is missing")}
+	}
+	if len(state.PeerCertificates) == 0 {
+		return constrainedTrustError{err: errors.New("server certificate is missing")}
+	}
+	leaf := state.PeerCertificates[0]
+	intermediates := x509.NewCertPool()
+	for _, cert := range state.PeerCertificates[1:] {
+		intermediates.AddCert(cert)
+	}
+	opts := x509.VerifyOptions{
+		Roots:         roots,
+		Intermediates: intermediates,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		CurrentTime:   time.Now(),
+	}
+	if _, err := leaf.Verify(opts); err != nil {
+		return constrainedTrustError{err: err}
+	}
+	if err := leaf.VerifyHostname(serverName); err == nil {
+		return nil
+	}
+	if allowCommonNameIdentity && len(leaf.DNSNames) == 0 && len(leaf.IPAddresses) == 0 && validTLSCommonName(serverName) && leaf.Subject.CommonName == serverName {
+		return nil
+	}
+	return constrainedTrustError{err: errors.New("server certificate identity does not match registration name")}
+}
+
+func isConstrainedTrustError(err error) bool {
+	var trustErr constrainedTrustError
+	return errors.As(err, &trustErr)
 }
 
 func classifyNetworkError(ctx context.Context, fallback constrainedClass) constrainedClass {
