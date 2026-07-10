@@ -90,9 +90,10 @@ type constrainedAddKeyResult struct {
 }
 
 type constrainedFailure struct {
-	Schema       string `json:"schema"`
-	Status       string `json:"status"`
-	FailureClass string `json:"failure_class"`
+	Schema        string `json:"schema"`
+	Status        string `json:"status"`
+	FailureClass  string `json:"failure_class"`
+	FailureDetail string `json:"failure_detail,omitempty"`
 }
 
 type constrainedSuccess struct {
@@ -124,6 +125,23 @@ const (
 	classResultWriteFailed  constrainedClass = "result_write_failed"
 	classInternalFailure    constrainedClass = "internal_failure"
 )
+
+type constrainedFailureReason struct {
+	class  constrainedClass
+	detail string
+}
+
+func constrainedFailureFor(class constrainedClass) constrainedFailureReason {
+	return constrainedFailureReason{class: class}
+}
+
+func constrainedFailureWithDetail(class constrainedClass, detail string) constrainedFailureReason {
+	return constrainedFailureReason{class: class, detail: validConstrainedFailureDetail(detail)}
+}
+
+func (r constrainedFailureReason) empty() bool {
+	return r.class == ""
+}
 
 func constrainedRequested(c *cli.Context) bool {
 	for _, name := range []string{"constrained-plan-fd", "public-ca-fd", "regional-ca-fd", "config-fd", "result-fd"} {
@@ -269,8 +287,8 @@ func constrainedAction(c *cli.Context) error {
 	defer cancel()
 	run := constrainedRunner{ctx: ctx, files: files, deadline: time.Now().Add(60 * time.Second)}
 
-	if class := run.execute(c); class != "" {
-		return run.writeFailure(class)
+	if failure := run.execute(c); !failure.empty() {
+		return run.writeFailure(failure)
 	}
 	return nil
 }
@@ -281,91 +299,91 @@ type constrainedRunner struct {
 	deadline time.Time
 }
 
-func (r constrainedRunner) execute(c *cli.Context) constrainedClass {
+func (r constrainedRunner) execute(c *cli.Context) constrainedFailureReason {
 	if err := validateConstrainedInvocation(c); err != nil {
-		return classInvalidInvocation
+		return constrainedFailureFor(classInvalidInvocation)
 	}
 	if !r.admit(45 * time.Second) {
-		return r.contextClass()
+		return constrainedFailureFor(r.contextClass())
 	}
 
 	planRaw, err := readLimitedFile(r.files.plan, maxConstrainedPlanSize, 5*time.Second)
 	if err != nil {
-		return classInvalidPlan
+		return constrainedFailureFor(classInvalidPlan)
 	}
 	plan, err := parseConstrainedPlan(planRaw)
 	if err != nil {
-		return classInvalidPlan
+		return constrainedFailureFor(classInvalidPlan)
 	}
 
 	credentialRaw, err := readLimitedFile(r.files.credentials, maxConstrainedCredentialSize, 5*time.Second)
 	if err != nil {
-		return classInvalidCredentials
+		return constrainedFailureFor(classInvalidCredentials)
 	}
 	creds, err := parseConstrainedCredentials(credentialRaw)
 	if err != nil || !validConstrainedCredential(creds.username) || !validConstrainedCredential(creds.password) {
-		return classInvalidCredentials
+		return constrainedFailureFor(classInvalidCredentials)
 	}
 
 	publicCARaw, err := readLimitedFile(r.files.publicCA, maxConstrainedCABundleSize, 5*time.Second)
 	if err != nil {
-		return classInvalidTrust
+		return constrainedFailureWithDetail(classInvalidTrust, "public_ca_bundle")
 	}
 	publicPool, err := parseConstrainedCABundle(publicCARaw)
 	if err != nil {
-		return classInvalidTrust
+		return constrainedFailureWithDetail(classInvalidTrust, "public_ca_bundle")
 	}
 	regionalCARaw, err := readLimitedFile(r.files.regionalCA, maxConstrainedCABundleSize, 5*time.Second)
 	if err != nil {
-		return classInvalidTrust
+		return constrainedFailureWithDetail(classInvalidTrust, "regional_ca_bundle")
 	}
 	regionalPool, err := parseConstrainedCABundle(regionalCARaw)
 	if err != nil {
-		return classInvalidTrust
+		return constrainedFailureWithDetail(classInvalidTrust, "regional_ca_bundle")
 	}
 
 	if !r.admit(45 * time.Second) {
-		return r.contextClass()
+		return constrainedFailureFor(r.contextClass())
 	}
 	token, class := constrainedTokenRequest(r.ctx, plan.TokenDestinationIPv4, creds, publicPool)
 	if class != "" {
-		return class
+		return constrainedFailureFor(class)
 	}
 
 	if !r.admit(30 * time.Second) {
-		return r.contextClass()
+		return constrainedFailureFor(r.contextClass())
 	}
 	privateKey, err := wgtypes.GeneratePrivateKey()
 	if err != nil {
-		return classInternalFailure
+		return constrainedFailureFor(classInternalFailure)
 	}
 	publicKey := privateKey.PublicKey().String()
-	addKey, class := constrainedAddKeyRequest(r.ctx, plan.RegistrationCandidate, token, publicKey, regionalPool)
-	if class != "" {
-		return class
+	addKey, failure := constrainedAddKeyRequest(r.ctx, plan.RegistrationCandidate, token, publicKey, regionalPool)
+	if !failure.empty() {
+		return failure
 	}
 	if class := validateConstrainedAddKey(plan, addKey, publicKey); class != "" {
-		return class
+		return constrainedFailureFor(class)
 	}
 	if plan.ExcludedWireguardEndpointSet &&
 		plan.ExcludedWireguardEndpoint.IPv4 == addKey.ServerIP &&
 		plan.ExcludedWireguardEndpoint.UDPPort == addKey.ServerPort {
-		return classEndpointReused
+		return constrainedFailureFor(classEndpointReused)
 	}
 
 	if !r.admit(15 * time.Second) {
-		return r.contextClass()
+		return constrainedFailureFor(r.contextClass())
 	}
 	config, err := renderConstrainedConfig(privateKey.String(), addKey)
 	if err != nil || len(config) > maxConstrainedConfigSize {
-		return classInternalFailure
+		return constrainedFailureFor(classInternalFailure)
 	}
 	if err := writeLimitedFile(r.files.configWriter, []byte(config), maxConstrainedConfigSize, 5*time.Second); err != nil {
-		return classConfigWriteFailed
+		return constrainedFailureFor(classConfigWriteFailed)
 	}
 
 	if !r.admit(10 * time.Second) {
-		return r.contextClass()
+		return constrainedFailureFor(r.contextClass())
 	}
 	success := constrainedSuccess{
 		Schema:                   constrainedSchema,
@@ -382,30 +400,31 @@ func (r constrainedRunner) execute(c *cli.Context) constrainedClass {
 	}
 	result, err := json.Marshal(success)
 	if err != nil || len(result) > maxConstrainedResultSize {
-		return classInternalFailure
+		return constrainedFailureFor(classInternalFailure)
 	}
 	if err := writeLimitedFile(r.files.resultWriter, append(result, '\n'), maxConstrainedResultSize, 5*time.Second); err != nil {
-		return classResultWriteFailed
+		return constrainedFailureFor(classResultWriteFailed)
 	}
-	return ""
+	return constrainedFailureReason{}
 }
 
-func (r constrainedRunner) writeFailure(class constrainedClass) error {
+func (r constrainedRunner) writeFailure(failure constrainedFailureReason) error {
 	result, err := json.Marshal(constrainedFailure{
-		Schema:       constrainedSchema,
-		Status:       "failure",
-		FailureClass: string(class),
+		Schema:        constrainedSchema,
+		Status:        "failure",
+		FailureClass:  string(failure.class),
+		FailureDetail: failure.detail,
 	})
 	if err != nil {
 		return constrainedExit(classInternalFailure)
 	}
 	if r.files.resultWriter == nil {
-		return constrainedExit(class)
+		return constrainedExit(failure.class)
 	}
 	if err := writeLimitedFile(r.files.resultWriter, append(result, '\n'), maxConstrainedResultSize, 5*time.Second); err != nil {
 		return constrainedExit(classResultWriteFailed)
 	}
-	return constrainedExit(class)
+	return constrainedExit(failure.class)
 }
 
 func (r constrainedRunner) admit(remaining time.Duration) bool {
@@ -848,34 +867,34 @@ func constrainedTokenRequest(ctx context.Context, destinationIPv4 string, creds 
 	return token, ""
 }
 
-func constrainedAddKeyRequest(ctx context.Context, candidate constrainedRegistrationCandidate, token string, publicKey string, roots *x509.CertPool) (constrainedAddKeyResult, constrainedClass) {
+func constrainedAddKeyRequest(ctx context.Context, candidate constrainedRegistrationCandidate, token string, publicKey string, roots *x509.CertPool) (constrainedAddKeyResult, constrainedFailureReason) {
 	query := url.Values{"pt": {token}, "pubkey": {publicKey}}
 	reqURL := "https://" + candidate.TLSCommonName + ":1337/addKey?" + query.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return constrainedAddKeyResult{}, classInternalFailure
+		return constrainedAddKeyResult{}, constrainedFailureFor(classInternalFailure)
 	}
 	client := constrainedHTTPClient(candidate.IPv4, 1337, candidate.TLSCommonName, roots, 15*time.Second, true)
 	resp, err := client.Do(req)
 	if err != nil {
 		if isConstrainedTrustError(err) {
-			return constrainedAddKeyResult{}, classInvalidTrust
+			return constrainedAddKeyResult{}, constrainedFailureWithDetail(classInvalidTrust, constrainedTrustDetail(err))
 		}
-		return constrainedAddKeyResult{}, classifyNetworkError(ctx, classAddKeyFailed)
+		return constrainedAddKeyResult{}, constrainedFailureFor(classifyNetworkError(ctx, classAddKeyFailed))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return constrainedAddKeyResult{}, classAddKeyFailed
+		return constrainedAddKeyResult{}, constrainedFailureFor(classAddKeyFailed)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxConstrainedAddKeyBodySize+1))
 	if err != nil || len(raw) > maxConstrainedAddKeyBodySize {
-		return constrainedAddKeyResult{}, classResponseInvalid
+		return constrainedAddKeyResult{}, constrainedFailureFor(classResponseInvalid)
 	}
 	result, err := parseConstrainedAddKey(raw)
 	if err != nil {
-		return constrainedAddKeyResult{}, classResponseInvalid
+		return constrainedAddKeyResult{}, constrainedFailureFor(classResponseInvalid)
 	}
-	return result, ""
+	return result, constrainedFailureReason{}
 }
 
 func constrainedHTTPClient(ip string, port int, serverName string, roots *x509.CertPool, timeout time.Duration, allowCommonNameIdentity bool) *http.Client {
@@ -921,7 +940,8 @@ func constrainedHTTPClient(ip string, port int, serverName string, roots *x509.C
 }
 
 type constrainedTrustError struct {
-	err error
+	detail string
+	err    error
 }
 
 func (e constrainedTrustError) Error() string {
@@ -934,10 +954,10 @@ func (e constrainedTrustError) Unwrap() error {
 
 func verifyConstrainedTLSConnection(state tls.ConnectionState, serverName string, roots *x509.CertPool, allowCommonNameIdentity bool) error {
 	if roots == nil {
-		return constrainedTrustError{err: errors.New("trusted CA bundle is missing")}
+		return constrainedTrustError{detail: "missing_ca_bundle", err: errors.New("trusted CA bundle is missing")}
 	}
 	if len(state.PeerCertificates) == 0 {
-		return constrainedTrustError{err: errors.New("server certificate is missing")}
+		return constrainedTrustError{detail: "missing_certificate", err: errors.New("server certificate is missing")}
 	}
 	leaf := state.PeerCertificates[0]
 	intermediates := x509.NewCertPool()
@@ -951,7 +971,7 @@ func verifyConstrainedTLSConnection(state tls.ConnectionState, serverName string
 		CurrentTime:   time.Now(),
 	}
 	if _, err := leaf.Verify(opts); err != nil {
-		return constrainedTrustError{err: err}
+		return constrainedTrustError{detail: "ca_chain", err: err}
 	}
 	if err := leaf.VerifyHostname(serverName); err == nil {
 		return nil
@@ -959,12 +979,33 @@ func verifyConstrainedTLSConnection(state tls.ConnectionState, serverName string
 	if allowCommonNameIdentity && len(leaf.DNSNames) == 0 && len(leaf.IPAddresses) == 0 && validTLSCommonName(serverName) && leaf.Subject.CommonName == serverName {
 		return nil
 	}
-	return constrainedTrustError{err: errors.New("server certificate identity does not match registration name")}
+	return constrainedTrustError{detail: "endpoint_identity", err: errors.New("server certificate identity does not match registration name")}
 }
 
 func isConstrainedTrustError(err error) bool {
 	var trustErr constrainedTrustError
 	return errors.As(err, &trustErr)
+}
+
+func constrainedTrustDetail(err error) string {
+	var trustErr constrainedTrustError
+	if errors.As(err, &trustErr) {
+		return trustErr.detail
+	}
+	return "trust_validation"
+}
+
+func validConstrainedFailureDetail(value string) string {
+	if value == "" || len(value) > 64 {
+		return ""
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return ""
+	}
+	return value
 }
 
 func classifyNetworkError(ctx context.Context, fallback constrainedClass) constrainedClass {

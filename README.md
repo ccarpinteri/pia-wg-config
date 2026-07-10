@@ -78,7 +78,9 @@ trust path.
 Constrained mode requires all of these descriptors plus `--credentials-fd`. It
 rejects positional arguments, ordinary generation flags, unknown flags, and
 duplicate flags. Results are written as bounded JSON to `--result-fd`; on
-failure the result contains only `schema`, `status`, and `failure_class`.
+failure the result contains `schema`, `status`, `failure_class`, and sometimes
+a bounded non-secret `failure_detail` for coarse diagnostics such as CA bundle,
+certificate chain, or endpoint identity failures.
 
 This mode is intentionally not the general CLI interface. It exists for a
 separately reviewed launcher that supplies the plan, credentials, CA bundles,

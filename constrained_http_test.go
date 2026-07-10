@@ -129,6 +129,9 @@ func TestConstrainedHTTPClientRejectsWrongRegistrationCommonName(t *testing.T) {
 	if !isConstrainedTrustError(err) {
 		t.Fatalf("error = %T %[1]v, want constrained trust error", err)
 	}
+	if detail := constrainedTrustDetail(err); detail != "endpoint_identity" {
+		t.Fatalf("trust detail = %q, want endpoint_identity", detail)
+	}
 }
 
 func TestConstrainedHTTPClientRejectsCommonNameFallbackWhenSANsArePresent(t *testing.T) {
@@ -153,6 +156,9 @@ func TestConstrainedHTTPClientRejectsCommonNameFallbackWhenSANsArePresent(t *tes
 	}
 	if !isConstrainedTrustError(err) {
 		t.Fatalf("error = %T %[1]v, want constrained trust error", err)
+	}
+	if detail := constrainedTrustDetail(err); detail != "endpoint_identity" {
+		t.Fatalf("trust detail = %q, want endpoint_identity", detail)
 	}
 }
 
@@ -179,6 +185,9 @@ func TestConstrainedHTTPClientRejectsUntrustedRegistrationCA(t *testing.T) {
 	}
 	if !isConstrainedTrustError(err) {
 		t.Fatalf("error = %T %[1]v, want constrained trust error", err)
+	}
+	if detail := constrainedTrustDetail(err); detail != "ca_chain" {
+		t.Fatalf("trust detail = %q, want ca_chain", detail)
 	}
 }
 
