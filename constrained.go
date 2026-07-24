@@ -131,13 +131,16 @@ const (
 	detailTokenBodyReadFailed     = "token_body_read_failed"
 	detailTokenBodyTooLarge       = "token_body_too_large"
 	detailTokenJSONParseFailed    = "token_json_parse_failed"
+	detailTokenUnexpectedField    = "token_unexpected_field"
 	detailTokenMissingField       = "token_missing_field"
 	detailTokenInvalidToken       = "token_invalid_token"
 	detailAddKeyHTTPStatus        = "add_key_http_status"
 	detailAddKeyBodyReadFailed    = "add_key_body_read_failed"
 	detailAddKeyBodyTooLarge      = "add_key_body_too_large"
 	detailAddKeyJSONParseFailed   = "add_key_json_parse_failed"
+	detailAddKeyUnexpectedField   = "add_key_unexpected_field"
 	detailAddKeyMissingField      = "add_key_missing_field"
+	detailAddKeyFieldDecodeFailed = "add_key_field_decode_failed"
 	detailAddKeyInvalidStatus     = "add_key_invalid_status"
 	detailAddKeyInvalidServerKey  = "add_key_invalid_server_key"
 	detailAddKeyInvalidServerPort = "add_key_invalid_server_port"
@@ -147,6 +150,8 @@ const (
 	detailAddKeyInvalidPeerPubKey = "add_key_invalid_peer_pubkey"
 	detailAddKeyInvalidDNS        = "add_key_invalid_dns"
 )
+
+var errConstrainedUnexpectedField = errors.New("unexpected field")
 
 type constrainedFailureReason struct {
 	class  constrainedClass
@@ -772,8 +777,11 @@ func strictJSONObject(raw []byte, allowed map[string]bool) (map[string]json.RawM
 	for decoder.More() {
 		token, err := decoder.Token()
 		key, ok := token.(string)
-		if err != nil || !ok || !allowed[key] {
+		if err != nil || !ok {
 			return nil, errors.New("invalid field")
+		}
+		if !allowed[key] {
+			return nil, fmt.Errorf("%w: %s", errConstrainedUnexpectedField, key)
 		}
 		if _, duplicate := fields[key]; duplicate {
 			return nil, errors.New("duplicate field")
@@ -881,16 +889,9 @@ func constrainedTokenRequest(ctx context.Context, destinationIPv4 string, creds 
 	if len(raw) > maxConstrainedTokenBodySize {
 		return "", constrainedFailureWithDetail(classResponseInvalid, detailTokenBodyTooLarge)
 	}
-	fields, err := strictJSONObject(raw, map[string]bool{"token": true})
-	if err != nil {
-		return "", constrainedFailureWithDetail(classResponseInvalid, detailTokenJSONParseFailed)
-	}
-	if len(fields) != 1 {
-		return "", constrainedFailureWithDetail(classResponseInvalid, detailTokenMissingField)
-	}
-	var token string
-	if err := decodeJSONString(fields["token"], &token); err != nil || !validVisibleASCII(token, maxConstrainedTokenSize) {
-		return "", constrainedFailureWithDetail(classResponseInvalid, detailTokenInvalidToken)
+	token, detail := parseConstrainedTokenDetailed(raw)
+	if detail != "" {
+		return "", constrainedFailureWithDetail(classResponseInvalid, detail)
 	}
 	return token, constrainedFailureReason{}
 }
@@ -1057,12 +1058,33 @@ func parseConstrainedAddKey(raw []byte) (constrainedAddKeyResult, error) {
 	return result, nil
 }
 
+func parseConstrainedTokenDetailed(raw []byte) (string, string) {
+	fields, err := strictJSONObject(raw, map[string]bool{"token": true})
+	if errors.Is(err, errConstrainedUnexpectedField) {
+		return "", detailTokenUnexpectedField
+	}
+	if err != nil {
+		return "", detailTokenJSONParseFailed
+	}
+	if len(fields) != 1 {
+		return "", detailTokenMissingField
+	}
+	var token string
+	if err := decodeJSONString(fields["token"], &token); err != nil || !validVisibleASCII(token, maxConstrainedTokenSize) {
+		return "", detailTokenInvalidToken
+	}
+	return token, ""
+}
+
 func parseConstrainedAddKeyDetailed(raw []byte) (constrainedAddKeyResult, string) {
 	fields, err := strictJSONObject(raw, map[string]bool{
 		"status": true, "server_key": true, "server_port": true, "server_ip": true,
 		"server_vip": true, "peer_ip": true, "peer_pubkey": true, "dns_servers": true,
 	})
 	if err != nil || len(fields) != 8 {
+		if errors.Is(err, errConstrainedUnexpectedField) {
+			return constrainedAddKeyResult{}, detailAddKeyUnexpectedField
+		}
 		if err != nil {
 			return constrainedAddKeyResult{}, detailAddKeyJSONParseFailed
 		}
@@ -1074,14 +1096,14 @@ func parseConstrainedAddKeyDetailed(raw []byte) (constrainedAddKeyResult, string
 		"server_vip": &result.ServerVIP, "peer_ip": &result.PeerIP, "peer_pubkey": &result.PeerPubKey,
 	} {
 		if err := decodeJSONString(fields[name], target); err != nil {
-			return constrainedAddKeyResult{}, detailAddKeyJSONParseFailed
+			return constrainedAddKeyResult{}, detailAddKeyFieldDecodeFailed
 		}
 	}
 	if err := json.Unmarshal(fields["server_port"], &result.ServerPort); err != nil {
-		return constrainedAddKeyResult{}, detailAddKeyJSONParseFailed
+		return constrainedAddKeyResult{}, detailAddKeyFieldDecodeFailed
 	}
 	if err := json.Unmarshal(fields["dns_servers"], &result.DNSServers); err != nil {
-		return constrainedAddKeyResult{}, detailAddKeyJSONParseFailed
+		return constrainedAddKeyResult{}, detailAddKeyFieldDecodeFailed
 	}
 	return result, ""
 }

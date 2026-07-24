@@ -283,7 +283,6 @@ func TestParseConstrainedAddKeyRejectsStrictJSONViolations(t *testing.T) {
 func TestParseConstrainedAddKeyDetailsStrictJSONViolations(t *testing.T) {
 	body := validAddKeyJSON(t)
 	tests := map[string]string{
-		"unknown":   strings.Replace(body, `"dns_servers":["1.1.1.1"]`, `"dns_servers":["1.1.1.1"],"extra":true`, 1),
 		"duplicate": strings.Replace(body, `"status":"OK"`, `"status":"OK","status":"OK"`, 1),
 		"trailing":  body + " ",
 	}
@@ -295,9 +294,42 @@ func TestParseConstrainedAddKeyDetailsStrictJSONViolations(t *testing.T) {
 		})
 	}
 
+	unknown := strings.Replace(body, `"dns_servers":["1.1.1.1"]`, `"dns_servers":["1.1.1.1"],"extra":true`, 1)
+	if _, detail := parseConstrainedAddKeyDetailed([]byte(unknown)); detail != detailAddKeyUnexpectedField {
+		t.Fatalf("unknown detail = %q, want %q", detail, detailAddKeyUnexpectedField)
+	}
+
 	missing := strings.Replace(body, `,"dns_servers":["1.1.1.1"]`, ``, 1)
 	if _, detail := parseConstrainedAddKeyDetailed([]byte(missing)); detail != detailAddKeyMissingField {
 		t.Fatalf("missing detail = %q, want %q", detail, detailAddKeyMissingField)
+	}
+
+	decodeFailure := strings.Replace(body, `"server_port":51820`, `"server_port":"51820"`, 1)
+	if _, detail := parseConstrainedAddKeyDetailed([]byte(decodeFailure)); detail != detailAddKeyFieldDecodeFailed {
+		t.Fatalf("decode detail = %q, want %q", detail, detailAddKeyFieldDecodeFailed)
+	}
+}
+
+func TestParseConstrainedTokenDetails(t *testing.T) {
+	tests := map[string]struct {
+		raw    string
+		detail string
+	}{
+		"parse failure":      {raw: `not json`, detail: detailTokenJSONParseFailed},
+		"unexpected field":   {raw: `{"token":"abc","extra":true}`, detail: detailTokenUnexpectedField},
+		"missing field":      {raw: `{}`, detail: detailTokenMissingField},
+		"invalid token type": {raw: `{"token":123}`, detail: detailTokenInvalidToken},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, detail := parseConstrainedTokenDetailed([]byte(tt.raw)); detail != tt.detail {
+				t.Fatalf("detail = %q, want %q", detail, tt.detail)
+			}
+		})
+	}
+
+	if token, detail := parseConstrainedTokenDetailed([]byte(`{"token":"abc"}`)); token != "abc" || detail != "" {
+		t.Fatalf("token/detail = %q/%q, want abc/empty", token, detail)
 	}
 }
 
@@ -347,6 +379,14 @@ func TestValidateConstrainedAddKey(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects invalid dns", func(t *testing.T) {
+		bad := result
+		bad.DNSServers = []string{"not-an-ip"}
+		if failure := validateConstrainedAddKey(plan, bad, publicKey); failure.class != classResponseInvalid || failure.detail != detailAddKeyInvalidDNS {
+			t.Fatalf("failure = %+v, want response_invalid/%s", failure, detailAddKeyInvalidDNS)
+		}
+	})
+
 	t.Run("rejects endpoint reuse", func(t *testing.T) {
 		reused := result
 		reused.ServerIP = plan.ExcludedWireguardEndpoint.IPv4
@@ -368,13 +408,16 @@ func TestConstrainedFailureDetailsAreSafeConstants(t *testing.T) {
 		detailTokenBodyReadFailed,
 		detailTokenBodyTooLarge,
 		detailTokenJSONParseFailed,
+		detailTokenUnexpectedField,
 		detailTokenMissingField,
 		detailTokenInvalidToken,
 		detailAddKeyHTTPStatus,
 		detailAddKeyBodyReadFailed,
 		detailAddKeyBodyTooLarge,
 		detailAddKeyJSONParseFailed,
+		detailAddKeyUnexpectedField,
 		detailAddKeyMissingField,
+		detailAddKeyFieldDecodeFailed,
 		detailAddKeyInvalidStatus,
 		detailAddKeyInvalidServerKey,
 		detailAddKeyInvalidServerPort,
