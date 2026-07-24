@@ -280,6 +280,27 @@ func TestParseConstrainedAddKeyRejectsStrictJSONViolations(t *testing.T) {
 	}
 }
 
+func TestParseConstrainedAddKeyDetailsStrictJSONViolations(t *testing.T) {
+	body := validAddKeyJSON(t)
+	tests := map[string]string{
+		"unknown":   strings.Replace(body, `"dns_servers":["1.1.1.1"]`, `"dns_servers":["1.1.1.1"],"extra":true`, 1),
+		"duplicate": strings.Replace(body, `"status":"OK"`, `"status":"OK","status":"OK"`, 1),
+		"trailing":  body + " ",
+	}
+	for name, raw := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, detail := parseConstrainedAddKeyDetailed([]byte(raw)); detail != detailAddKeyJSONParseFailed {
+				t.Fatalf("detail = %q, want %q", detail, detailAddKeyJSONParseFailed)
+			}
+		})
+	}
+
+	missing := strings.Replace(body, `,"dns_servers":["1.1.1.1"]`, ``, 1)
+	if _, detail := parseConstrainedAddKeyDetailed([]byte(missing)); detail != detailAddKeyMissingField {
+		t.Fatalf("missing detail = %q, want %q", detail, detailAddKeyMissingField)
+	}
+}
+
 func TestValidateConstrainedAddKey(t *testing.T) {
 	plan, err := parseConstrainedPlan([]byte(validConstrainedPlanJSON()))
 	if err != nil {
@@ -287,23 +308,42 @@ func TestValidateConstrainedAddKey(t *testing.T) {
 	}
 	publicKey := testWGPublicKey(t)
 	result := validAddKeyResult(t, publicKey)
-	if class := validateConstrainedAddKey(plan, result, publicKey); class != "" {
-		t.Fatalf("validateConstrainedAddKey class = %s", class)
+	if failure := validateConstrainedAddKey(plan, result, publicKey); !failure.empty() {
+		t.Fatalf("validateConstrainedAddKey failure = %+v", failure)
 	}
+
+	t.Run("accepts bare ipv4 peer ip", func(t *testing.T) {
+		legacy := result
+		legacy.PeerIP = "10.0.0.2"
+		if failure := validateConstrainedAddKey(plan, legacy, publicKey); !failure.empty() {
+			t.Fatalf("validateConstrainedAddKey failure = %+v", failure)
+		}
+	})
 
 	t.Run("requires port forward vip", func(t *testing.T) {
 		bad := result
 		bad.ServerVIP = ""
-		if class := validateConstrainedAddKey(plan, bad, publicKey); class != classResponseInvalid {
-			t.Fatalf("class = %s", class)
+		if failure := validateConstrainedAddKey(plan, bad, publicKey); failure.class != classResponseInvalid || failure.detail != detailAddKeyInvalidServerVIP {
+			t.Fatalf("failure = %+v, want response_invalid/%s", failure, detailAddKeyInvalidServerVIP)
+		}
+	})
+
+	t.Run("rejects invalid peer ip", func(t *testing.T) {
+		tests := []string{"", "not-an-ip", "2001:db8::1", "10.0.0.2/not-cidr"}
+		for _, peerIP := range tests {
+			bad := result
+			bad.PeerIP = peerIP
+			if failure := validateConstrainedAddKey(plan, bad, publicKey); failure.class != classResponseInvalid || failure.detail != detailAddKeyInvalidPeerIP {
+				t.Fatalf("peer_ip %q failure = %+v, want response_invalid/%s", peerIP, failure, detailAddKeyInvalidPeerIP)
+			}
 		}
 	})
 
 	t.Run("rejects peer public key mismatch", func(t *testing.T) {
 		bad := result
 		bad.PeerPubKey = testWGPublicKey(t)
-		if class := validateConstrainedAddKey(plan, bad, publicKey); class != classResponseInvalid {
-			t.Fatalf("class = %s", class)
+		if failure := validateConstrainedAddKey(plan, bad, publicKey); failure.class != classResponseInvalid || failure.detail != detailAddKeyInvalidPeerPubKey {
+			t.Fatalf("failure = %+v, want response_invalid/%s", failure, detailAddKeyInvalidPeerPubKey)
 		}
 	})
 
@@ -311,8 +351,8 @@ func TestValidateConstrainedAddKey(t *testing.T) {
 		reused := result
 		reused.ServerIP = plan.ExcludedWireguardEndpoint.IPv4
 		reused.ServerPort = plan.ExcludedWireguardEndpoint.UDPPort
-		if class := validateConstrainedAddKey(plan, reused, publicKey); class != "" {
-			t.Fatalf("validation class before reuse check = %s", class)
+		if failure := validateConstrainedAddKey(plan, reused, publicKey); !failure.empty() {
+			t.Fatalf("validation failure before reuse check = %+v", failure)
 		}
 		if !(plan.ExcludedWireguardEndpointSet &&
 			plan.ExcludedWireguardEndpoint.IPv4 == reused.ServerIP &&
@@ -320,6 +360,35 @@ func TestValidateConstrainedAddKey(t *testing.T) {
 			t.Fatal("reuse condition was not detected")
 		}
 	})
+}
+
+func TestConstrainedFailureDetailsAreSafeConstants(t *testing.T) {
+	details := []string{
+		detailTokenHTTPStatus,
+		detailTokenBodyReadFailed,
+		detailTokenBodyTooLarge,
+		detailTokenJSONParseFailed,
+		detailTokenMissingField,
+		detailTokenInvalidToken,
+		detailAddKeyHTTPStatus,
+		detailAddKeyBodyReadFailed,
+		detailAddKeyBodyTooLarge,
+		detailAddKeyJSONParseFailed,
+		detailAddKeyMissingField,
+		detailAddKeyInvalidStatus,
+		detailAddKeyInvalidServerKey,
+		detailAddKeyInvalidServerPort,
+		detailAddKeyInvalidServerIP,
+		detailAddKeyInvalidServerVIP,
+		detailAddKeyInvalidPeerIP,
+		detailAddKeyInvalidPeerPubKey,
+		detailAddKeyInvalidDNS,
+	}
+	for _, detail := range details {
+		if got := validConstrainedFailureDetail(detail); got != detail {
+			t.Fatalf("detail %q sanitized to %q", detail, got)
+		}
+	}
 }
 
 func TestRenderConstrainedConfigUsesValidatedEndpointPort(t *testing.T) {
@@ -340,6 +409,15 @@ func TestRenderConstrainedConfigUsesValidatedEndpointPort(t *testing.T) {
 	}
 	if strings.Contains(config, ":1337") {
 		t.Fatalf("config used hardcoded registration port:\n%s", config)
+	}
+
+	result.PeerIP = "10.0.0.2"
+	config, err = renderConstrainedConfig(privateKey.String(), result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(config, "Address = 10.0.0.2/32") {
+		t.Fatalf("config did not normalize bare peer IPv4:\n%s", config)
 	}
 }
 

@@ -126,6 +126,28 @@ const (
 	classInternalFailure    constrainedClass = "internal_failure"
 )
 
+const (
+	detailTokenHTTPStatus         = "token_http_status"
+	detailTokenBodyReadFailed     = "token_body_read_failed"
+	detailTokenBodyTooLarge       = "token_body_too_large"
+	detailTokenJSONParseFailed    = "token_json_parse_failed"
+	detailTokenMissingField       = "token_missing_field"
+	detailTokenInvalidToken       = "token_invalid_token"
+	detailAddKeyHTTPStatus        = "add_key_http_status"
+	detailAddKeyBodyReadFailed    = "add_key_body_read_failed"
+	detailAddKeyBodyTooLarge      = "add_key_body_too_large"
+	detailAddKeyJSONParseFailed   = "add_key_json_parse_failed"
+	detailAddKeyMissingField      = "add_key_missing_field"
+	detailAddKeyInvalidStatus     = "add_key_invalid_status"
+	detailAddKeyInvalidServerKey  = "add_key_invalid_server_key"
+	detailAddKeyInvalidServerPort = "add_key_invalid_server_port"
+	detailAddKeyInvalidServerIP   = "add_key_invalid_server_ip"
+	detailAddKeyInvalidServerVIP  = "add_key_invalid_server_vip"
+	detailAddKeyInvalidPeerIP     = "add_key_invalid_peer_ip"
+	detailAddKeyInvalidPeerPubKey = "add_key_invalid_peer_pubkey"
+	detailAddKeyInvalidDNS        = "add_key_invalid_dns"
+)
+
 type constrainedFailureReason struct {
 	class  constrainedClass
 	detail string
@@ -345,9 +367,9 @@ func (r constrainedRunner) execute(c *cli.Context) constrainedFailureReason {
 	if !r.admit(45 * time.Second) {
 		return constrainedFailureFor(r.contextClass())
 	}
-	token, class := constrainedTokenRequest(r.ctx, plan.TokenDestinationIPv4, creds, publicPool)
-	if class != "" {
-		return constrainedFailureFor(class)
+	token, tokenFailure := constrainedTokenRequest(r.ctx, plan.TokenDestinationIPv4, creds, publicPool)
+	if !tokenFailure.empty() {
+		return tokenFailure
 	}
 
 	if !r.admit(30 * time.Second) {
@@ -362,8 +384,8 @@ func (r constrainedRunner) execute(c *cli.Context) constrainedFailureReason {
 	if !failure.empty() {
 		return failure
 	}
-	if class := validateConstrainedAddKey(plan, addKey, publicKey); class != "" {
-		return constrainedFailureFor(class)
+	if failure := validateConstrainedAddKey(plan, addKey, publicKey); !failure.empty() {
+		return failure
 	}
 	if plan.ExcludedWireguardEndpointSet &&
 		plan.ExcludedWireguardEndpoint.IPv4 == addKey.ServerIP &&
@@ -833,38 +855,44 @@ func pemDecode(raw []byte) (*pemBlock, []byte) {
 	return &pemBlock{Type: block.Type, Bytes: block.Bytes}, rest
 }
 
-func constrainedTokenRequest(ctx context.Context, destinationIPv4 string, creds credentials, roots *x509.CertPool) (string, constrainedClass) {
+func constrainedTokenRequest(ctx context.Context, destinationIPv4 string, creds credentials, roots *x509.CertPool) (string, constrainedFailureReason) {
 	form := url.Values{"username": {creds.username}, "password": {creds.password}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://www.privateinternetaccess.com/api/client/v2/token", strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", classInternalFailure
+		return "", constrainedFailureFor(classInternalFailure)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	client := constrainedHTTPClient(destinationIPv4, 443, "www.privateinternetaccess.com", roots, 15*time.Second, false)
 	resp, err := client.Do(req)
 	if err != nil {
 		if isConstrainedTrustError(err) {
-			return "", classInvalidTrust
+			return "", constrainedFailureFor(classInvalidTrust)
 		}
-		return "", classifyNetworkError(ctx, classTokenFailed)
+		return "", constrainedFailureFor(classifyNetworkError(ctx, classTokenFailed))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", classTokenFailed
+		return "", constrainedFailureWithDetail(classTokenFailed, detailTokenHTTPStatus)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxConstrainedTokenBodySize+1))
-	if err != nil || len(raw) > maxConstrainedTokenBodySize {
-		return "", classResponseInvalid
+	if err != nil {
+		return "", constrainedFailureWithDetail(classResponseInvalid, detailTokenBodyReadFailed)
+	}
+	if len(raw) > maxConstrainedTokenBodySize {
+		return "", constrainedFailureWithDetail(classResponseInvalid, detailTokenBodyTooLarge)
 	}
 	fields, err := strictJSONObject(raw, map[string]bool{"token": true})
-	if err != nil || len(fields) != 1 {
-		return "", classResponseInvalid
+	if err != nil {
+		return "", constrainedFailureWithDetail(classResponseInvalid, detailTokenJSONParseFailed)
+	}
+	if len(fields) != 1 {
+		return "", constrainedFailureWithDetail(classResponseInvalid, detailTokenMissingField)
 	}
 	var token string
 	if err := decodeJSONString(fields["token"], &token); err != nil || !validVisibleASCII(token, maxConstrainedTokenSize) {
-		return "", classResponseInvalid
+		return "", constrainedFailureWithDetail(classResponseInvalid, detailTokenInvalidToken)
 	}
-	return token, ""
+	return token, constrainedFailureReason{}
 }
 
 func constrainedAddKeyRequest(ctx context.Context, candidate constrainedRegistrationCandidate, token string, publicKey string, roots *x509.CertPool) (constrainedAddKeyResult, constrainedFailureReason) {
@@ -884,15 +912,18 @@ func constrainedAddKeyRequest(ctx context.Context, candidate constrainedRegistra
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return constrainedAddKeyResult{}, constrainedFailureFor(classAddKeyFailed)
+		return constrainedAddKeyResult{}, constrainedFailureWithDetail(classAddKeyFailed, detailAddKeyHTTPStatus)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxConstrainedAddKeyBodySize+1))
-	if err != nil || len(raw) > maxConstrainedAddKeyBodySize {
-		return constrainedAddKeyResult{}, constrainedFailureFor(classResponseInvalid)
-	}
-	result, err := parseConstrainedAddKey(raw)
 	if err != nil {
-		return constrainedAddKeyResult{}, constrainedFailureFor(classResponseInvalid)
+		return constrainedAddKeyResult{}, constrainedFailureWithDetail(classResponseInvalid, detailAddKeyBodyReadFailed)
+	}
+	if len(raw) > maxConstrainedAddKeyBodySize {
+		return constrainedAddKeyResult{}, constrainedFailureWithDetail(classResponseInvalid, detailAddKeyBodyTooLarge)
+	}
+	result, detail := parseConstrainedAddKeyDetailed(raw)
+	if detail != "" {
+		return constrainedAddKeyResult{}, constrainedFailureWithDetail(classResponseInvalid, detail)
 	}
 	return result, constrainedFailureReason{}
 }
@@ -1019,12 +1050,23 @@ func classifyNetworkError(ctx context.Context, fallback constrainedClass) constr
 }
 
 func parseConstrainedAddKey(raw []byte) (constrainedAddKeyResult, error) {
+	result, detail := parseConstrainedAddKeyDetailed(raw)
+	if detail != "" {
+		return constrainedAddKeyResult{}, errors.New("invalid add key response")
+	}
+	return result, nil
+}
+
+func parseConstrainedAddKeyDetailed(raw []byte) (constrainedAddKeyResult, string) {
 	fields, err := strictJSONObject(raw, map[string]bool{
 		"status": true, "server_key": true, "server_port": true, "server_ip": true,
 		"server_vip": true, "peer_ip": true, "peer_pubkey": true, "dns_servers": true,
 	})
 	if err != nil || len(fields) != 8 {
-		return constrainedAddKeyResult{}, errors.New("invalid add key response")
+		if err != nil {
+			return constrainedAddKeyResult{}, detailAddKeyJSONParseFailed
+		}
+		return constrainedAddKeyResult{}, detailAddKeyMissingField
 	}
 	var result constrainedAddKeyResult
 	for name, target := range map[string]*string{
@@ -1032,51 +1074,68 @@ func parseConstrainedAddKey(raw []byte) (constrainedAddKeyResult, error) {
 		"server_vip": &result.ServerVIP, "peer_ip": &result.PeerIP, "peer_pubkey": &result.PeerPubKey,
 	} {
 		if err := decodeJSONString(fields[name], target); err != nil {
-			return constrainedAddKeyResult{}, err
+			return constrainedAddKeyResult{}, detailAddKeyJSONParseFailed
 		}
 	}
 	if err := json.Unmarshal(fields["server_port"], &result.ServerPort); err != nil {
-		return constrainedAddKeyResult{}, err
+		return constrainedAddKeyResult{}, detailAddKeyJSONParseFailed
 	}
 	if err := json.Unmarshal(fields["dns_servers"], &result.DNSServers); err != nil {
-		return constrainedAddKeyResult{}, err
+		return constrainedAddKeyResult{}, detailAddKeyJSONParseFailed
 	}
-	return result, nil
+	return result, ""
 }
 
-func validateConstrainedAddKey(plan constrainedPlan, result constrainedAddKeyResult, publicKey string) constrainedClass {
+func validateConstrainedAddKey(plan constrainedPlan, result constrainedAddKeyResult, publicKey string) constrainedFailureReason {
 	if result.Status != "OK" {
-		return classResponseInvalid
+		return constrainedFailureWithDetail(classResponseInvalid, detailAddKeyInvalidStatus)
 	}
 	if _, err := wgtypes.ParseKey(result.ServerKey); err != nil {
-		return classResponseInvalid
+		return constrainedFailureWithDetail(classResponseInvalid, detailAddKeyInvalidServerKey)
 	}
-	if result.ServerPort < 1 || result.ServerPort > 65535 || !validIPv4(result.ServerIP) {
-		return classResponseInvalid
+	if result.ServerPort < 1 || result.ServerPort > 65535 {
+		return constrainedFailureWithDetail(classResponseInvalid, detailAddKeyInvalidServerPort)
 	}
-	peerIP, _, err := net.ParseCIDR(result.PeerIP)
-	if err != nil || peerIP.To4() == nil {
-		return classResponseInvalid
+	if !validIPv4(result.ServerIP) {
+		return constrainedFailureWithDetail(classResponseInvalid, detailAddKeyInvalidServerIP)
+	}
+	if !validConstrainedPeerIP(result.PeerIP) {
+		return constrainedFailureWithDetail(classResponseInvalid, detailAddKeyInvalidPeerIP)
 	}
 	if _, err := wgtypes.ParseKey(result.PeerPubKey); err != nil || result.PeerPubKey != publicKey {
-		return classResponseInvalid
+		return constrainedFailureWithDetail(classResponseInvalid, detailAddKeyInvalidPeerPubKey)
 	}
 	if len(result.DNSServers) < 1 || len(result.DNSServers) > 8 {
-		return classResponseInvalid
+		return constrainedFailureWithDetail(classResponseInvalid, detailAddKeyInvalidDNS)
 	}
 	for _, dns := range result.DNSServers {
 		if !validIPv4(dns) {
-			return classResponseInvalid
+			return constrainedFailureWithDetail(classResponseInvalid, detailAddKeyInvalidDNS)
 		}
 	}
 	if plan.PortForwarding {
 		if !validIPv4(result.ServerVIP) {
-			return classResponseInvalid
+			return constrainedFailureWithDetail(classResponseInvalid, detailAddKeyInvalidServerVIP)
 		}
 	} else if result.ServerVIP != "" {
-		return classResponseInvalid
+		return constrainedFailureWithDetail(classResponseInvalid, detailAddKeyInvalidServerVIP)
 	}
-	return ""
+	return constrainedFailureReason{}
+}
+
+func validConstrainedPeerIP(value string) bool {
+	if ip := net.ParseIP(value); ip != nil {
+		return ip.To4() != nil
+	}
+	ip, _, err := net.ParseCIDR(value)
+	return err == nil && ip.To4() != nil
+}
+
+func constrainedPeerAddress(value string) string {
+	if ip := net.ParseIP(value); ip != nil && ip.To4() != nil {
+		return ip.String() + "/32"
+	}
+	return value
 }
 
 func renderConstrainedConfig(privateKey string, result constrainedAddKeyResult) (string, error) {
@@ -1093,7 +1152,7 @@ func renderConstrainedConfig(privateKey string, result constrainedAddKeyResult) 
 		Endpoint   string
 	}{
 		PrivateKey: privateKey,
-		Address:    result.PeerIP,
+		Address:    constrainedPeerAddress(result.PeerIP),
 		DNS:        result.DNSServers[0],
 		PublicKey:  result.ServerKey,
 		Endpoint:   net.JoinHostPort(result.ServerIP, strconv.Itoa(result.ServerPort)),
