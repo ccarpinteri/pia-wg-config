@@ -59,7 +59,7 @@ func TestRawConstrainedRequested(t *testing.T) {
 }
 
 func TestParseRawConstrainedArgsAcceptsOnlyCompleteConstrainedFDSet(t *testing.T) {
-	values, err := parseRawConstrainedArgs([]string{
+	values, _, err := parseRawConstrainedArgs([]string{
 		"--constrained-plan-fd", "3",
 		"--credentials-fd=4",
 		"--public-ca-fd", "5",
@@ -106,7 +106,7 @@ func TestParseRawConstrainedArgsRejectsBeforeCLIHandling(t *testing.T) {
 	}
 	for name, args := range tests {
 		t.Run(name, func(t *testing.T) {
-			if _, err := parseRawConstrainedArgs(args); err == nil {
+			if _, _, err := parseRawConstrainedArgs(args); err == nil {
 				t.Fatal("expected parse error")
 			}
 		})
@@ -426,6 +426,9 @@ func TestConstrainedFailureDetailsAreSafeConstants(t *testing.T) {
 		detailAddKeyInvalidPeerIP,
 		detailAddKeyInvalidPeerPubKey,
 		detailAddKeyInvalidDNS,
+		detailSocketMarkInvalid,
+		detailSocketMarkUnsupported,
+		detailSocketMarkRefused,
 	}
 	for _, detail := range details {
 		if got := validConstrainedFailureDetail(detail); got != detail {
@@ -544,6 +547,7 @@ func constrainedCLIContext(t *testing.T, args ...string) *cli.Context {
 		&cli.IntFlag{Name: "regional-ca-fd"},
 		&cli.IntFlag{Name: "config-fd"},
 		&cli.IntFlag{Name: "result-fd"},
+		&cli.StringFlag{Name: "socket-mark"},
 	}
 	for _, cliFlag := range flags {
 		if err := cliFlag.Apply(set); err != nil {

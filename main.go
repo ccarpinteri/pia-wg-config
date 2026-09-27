@@ -30,6 +30,9 @@ func main() {
 			if constrainedRequested(c) {
 				return constrainedAction(c)
 			}
+			if err := rejectSocketMarkOutsideConstrainedMode(c); err != nil {
+				return err
+			}
 			if c.Bool("list-regions") {
 				return listRegionsAction(c)
 			}
@@ -134,6 +137,10 @@ func main() {
 				Name:  "result-fd",
 				Value: -1,
 				Usage: "Write constrained result JSON to an inherited file descriptor",
+			},
+			&cli.StringFlag{
+				Name:  "socket-mark",
+				Usage: "Constrained mode only, Linux only: set SO_MARK to this non-zero value (decimal or 0x hex) on every socket the generator opens",
 			},
 		},
 	}

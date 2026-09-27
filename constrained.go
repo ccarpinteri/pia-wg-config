@@ -194,32 +194,38 @@ func rawConstrainedRequested(args []string) bool {
 }
 
 func constrainedActionFromRawArgs(args []string) error {
-	values, err := parseRawConstrainedArgs(args)
+	values, strValues, err := parseRawConstrainedArgs(args)
 	if err != nil {
 		return writeInvalidInvocationFailureFD(values["result-fd"])
 	}
-	c := constrainedContextFromValues(values)
+	c := constrainedContextFromValues(values, strValues)
 	return constrainedAction(c)
 }
 
-func parseRawConstrainedArgs(args []string) (map[string]int, error) {
+// parseRawConstrainedArgs reads the constrained invocation: the descriptor
+// flags, which must all be present, and the optional --socket-mark. The mark
+// is returned as written; its syntax is checked by the runner, so an invalid
+// mark is reported through the result descriptor wherever it appears on the
+// command line.
+func parseRawConstrainedArgs(args []string) (map[string]int, map[string]string, error) {
 	values := map[string]int{}
+	strValues := map[string]string{}
 	seen := map[string]bool{}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" || !strings.HasPrefix(arg, "-") {
-			return values, errors.New("invalid positional argument")
+			return values, strValues, errors.New("invalid positional argument")
 		}
 		name := rawFlagName(arg)
 		if name == "" {
-			return values, errors.New("invalid flag")
+			return values, strValues, errors.New("invalid flag")
 		}
 		if seen[name] {
-			return values, errors.New("duplicate flag")
+			return values, strValues, errors.New("duplicate flag")
 		}
 		seen[name] = true
-		if !rawConstrainedFDFlag(name) {
-			return values, errors.New("incompatible flag")
+		if !rawConstrainedFDFlag(name) && name != "socket-mark" {
+			return values, strValues, errors.New("incompatible flag")
 		}
 		var rawValue string
 		if eq := strings.IndexByte(arg, '='); eq >= 0 {
@@ -227,22 +233,26 @@ func parseRawConstrainedArgs(args []string) (map[string]int, error) {
 		} else {
 			i++
 			if i >= len(args) {
-				return values, errors.New("missing flag value")
+				return values, strValues, errors.New("missing flag value")
 			}
 			rawValue = args[i]
 		}
+		if name == "socket-mark" {
+			strValues[name] = rawValue
+			continue
+		}
 		value, err := strconv.Atoi(rawValue)
 		if err != nil {
-			return values, errors.New("invalid fd value")
+			return values, strValues, errors.New("invalid fd value")
 		}
 		values[name] = value
 	}
 	for _, name := range []string{"constrained-plan-fd", "credentials-fd", "public-ca-fd", "regional-ca-fd", "config-fd", "result-fd"} {
 		if _, ok := values[name]; !ok {
-			return values, errors.New("missing constrained fd")
+			return values, strValues, errors.New("missing constrained fd")
 		}
 	}
-	return values, nil
+	return values, strValues, nil
 }
 
 func rawFlagName(arg string) string {
@@ -268,7 +278,7 @@ func rawConstrainedFDFlag(name string) bool {
 	}
 }
 
-func constrainedContextFromValues(values map[string]int) *cli.Context {
+func constrainedContextFromValues(values map[string]int, strValues map[string]string) *cli.Context {
 	set := flag.NewFlagSet("constrained", flag.ContinueOnError)
 	set.SetOutput(io.Discard)
 	flags := []cli.Flag{
@@ -278,6 +288,7 @@ func constrainedContextFromValues(values map[string]int) *cli.Context {
 		&cli.IntFlag{Name: "regional-ca-fd"},
 		&cli.IntFlag{Name: "config-fd"},
 		&cli.IntFlag{Name: "result-fd"},
+		&cli.StringFlag{Name: "socket-mark"},
 		&cli.StringFlag{Name: "outfile"},
 		&cli.StringFlag{Name: "region"},
 		&cli.BoolFlag{Name: "verbose"},
@@ -297,6 +308,9 @@ func constrainedContextFromValues(values map[string]int) *cli.Context {
 	}
 	for name, value := range values {
 		_ = set.Set(name, strconv.Itoa(value))
+	}
+	for name, value := range strValues {
+		_ = set.Set(name, value)
 	}
 	return cli.NewContext(nil, set, nil)
 }
@@ -329,6 +343,10 @@ type constrainedRunner struct {
 func (r constrainedRunner) execute(c *cli.Context) constrainedFailureReason {
 	if err := validateConstrainedInvocation(c); err != nil {
 		return constrainedFailureFor(classInvalidInvocation)
+	}
+	control, failure := constrainedSocketControl(c)
+	if !failure.empty() {
+		return failure
 	}
 	if !r.admit(45 * time.Second) {
 		return constrainedFailureFor(r.contextClass())
@@ -372,7 +390,7 @@ func (r constrainedRunner) execute(c *cli.Context) constrainedFailureReason {
 	if !r.admit(45 * time.Second) {
 		return constrainedFailureFor(r.contextClass())
 	}
-	token, tokenFailure := constrainedTokenRequest(r.ctx, plan.TokenDestinationIPv4, creds, publicPool)
+	token, tokenFailure := constrainedTokenRequest(r.ctx, plan.TokenDestinationIPv4, creds, publicPool, control)
 	if !tokenFailure.empty() {
 		return tokenFailure
 	}
@@ -385,7 +403,7 @@ func (r constrainedRunner) execute(c *cli.Context) constrainedFailureReason {
 		return constrainedFailureFor(classInternalFailure)
 	}
 	publicKey := privateKey.PublicKey().String()
-	addKey, failure := constrainedAddKeyRequest(r.ctx, plan.RegistrationCandidate, token, publicKey, regionalPool)
+	addKey, failure := constrainedAddKeyRequest(r.ctx, plan.RegistrationCandidate, token, publicKey, regionalPool, control)
 	if !failure.empty() {
 		return failure
 	}
@@ -863,18 +881,21 @@ func pemDecode(raw []byte) (*pemBlock, []byte) {
 	return &pemBlock{Type: block.Type, Bytes: block.Bytes}, rest
 }
 
-func constrainedTokenRequest(ctx context.Context, destinationIPv4 string, creds credentials, roots *x509.CertPool) (string, constrainedFailureReason) {
+func constrainedTokenRequest(ctx context.Context, destinationIPv4 string, creds credentials, roots *x509.CertPool, control dialControl) (string, constrainedFailureReason) {
 	form := url.Values{"username": {creds.username}, "password": {creds.password}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://www.privateinternetaccess.com/api/client/v2/token", strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", constrainedFailureFor(classInternalFailure)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	client := constrainedHTTPClient(destinationIPv4, 443, "www.privateinternetaccess.com", roots, 15*time.Second, false)
+	client := constrainedHTTPClient(destinationIPv4, 443, "www.privateinternetaccess.com", roots, 15*time.Second, false, control)
 	resp, err := client.Do(req)
 	if err != nil {
 		if isConstrainedTrustError(err) {
 			return "", constrainedFailureFor(classInvalidTrust)
+		}
+		if errors.Is(err, errSocketMarkRefused) {
+			return "", constrainedFailureWithDetail(classTokenFailed, detailSocketMarkRefused)
 		}
 		return "", constrainedFailureFor(classifyNetworkError(ctx, classTokenFailed))
 	}
@@ -896,18 +917,21 @@ func constrainedTokenRequest(ctx context.Context, destinationIPv4 string, creds 
 	return token, constrainedFailureReason{}
 }
 
-func constrainedAddKeyRequest(ctx context.Context, candidate constrainedRegistrationCandidate, token string, publicKey string, roots *x509.CertPool) (constrainedAddKeyResult, constrainedFailureReason) {
+func constrainedAddKeyRequest(ctx context.Context, candidate constrainedRegistrationCandidate, token string, publicKey string, roots *x509.CertPool, control dialControl) (constrainedAddKeyResult, constrainedFailureReason) {
 	query := url.Values{"pt": {token}, "pubkey": {publicKey}}
 	reqURL := "https://" + candidate.TLSCommonName + ":1337/addKey?" + query.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return constrainedAddKeyResult{}, constrainedFailureFor(classInternalFailure)
 	}
-	client := constrainedHTTPClient(candidate.IPv4, 1337, candidate.TLSCommonName, roots, 15*time.Second, true)
+	client := constrainedHTTPClient(candidate.IPv4, 1337, candidate.TLSCommonName, roots, 15*time.Second, true, control)
 	resp, err := client.Do(req)
 	if err != nil {
 		if isConstrainedTrustError(err) {
 			return constrainedAddKeyResult{}, constrainedFailureWithDetail(classInvalidTrust, constrainedTrustDetail(err))
+		}
+		if errors.Is(err, errSocketMarkRefused) {
+			return constrainedAddKeyResult{}, constrainedFailureWithDetail(classAddKeyFailed, detailSocketMarkRefused)
 		}
 		return constrainedAddKeyResult{}, constrainedFailureFor(classifyNetworkError(ctx, classAddKeyFailed))
 	}
@@ -929,7 +953,12 @@ func constrainedAddKeyRequest(ctx context.Context, candidate constrainedRegistra
 	return result, constrainedFailureReason{}
 }
 
-func constrainedHTTPClient(ip string, port int, serverName string, roots *x509.CertPool, timeout time.Duration, allowCommonNameIdentity bool) *http.Client {
+// constrainedHTTPClient is the only way constrained mode reaches the network:
+// one TCP dial to ip:port, no DNS, no proxy, no retry. control, when non-nil,
+// runs on that socket before it connects (it sets --socket-mark); a control
+// error fails the dial. It is a required parameter so no client can be built
+// without deciding whether its socket is marked.
+func constrainedHTTPClient(ip string, port int, serverName string, roots *x509.CertPool, timeout time.Duration, allowCommonNameIdentity bool, control dialControl) *http.Client {
 	dialCount := 0
 	transport := &http.Transport{
 		Proxy:               nil,
@@ -958,7 +987,7 @@ func constrainedHTTPClient(ip string, port int, serverName string, roots *x509.C
 				return nil, errors.New("retry denied")
 			}
 			dialCount++
-			dialer := net.Dialer{Timeout: timeout}
+			dialer := net.Dialer{Timeout: timeout, Control: control}
 			return dialer.DialContext(ctx, "tcp4", net.JoinHostPort(ip, strconv.Itoa(port)))
 		},
 	}

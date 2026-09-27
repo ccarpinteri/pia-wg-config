@@ -39,7 +39,7 @@ func TestConstrainedHTTPClientDialsSuppliedIPv4WithoutDNSProxyOrHTTP2(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := constrainedHTTPClient(host, port, "example.privateinternetaccess.com", pool, 5*time.Second, false)
+	client := constrainedHTTPClient(host, port, "example.privateinternetaccess.com", pool, 5*time.Second, false, nil)
 	resp, err := client.Get("https://definitely.invalid.example/")
 	if err != nil {
 		t.Fatalf("client.Get returned error: %v", err)
@@ -70,7 +70,7 @@ func TestConstrainedHTTPClientAcceptsRealPIARegistrationCommonName(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := constrainedHTTPClient(host, port, "Server-11736-3a", pool, 5*time.Second, true)
+	client := constrainedHTTPClient(host, port, "Server-11736-3a", pool, 5*time.Second, true, nil)
 	resp, err := client.Get("https://Server-11736-3a/")
 	if err != nil {
 		t.Fatalf("client.Get returned error: %v", err)
@@ -95,7 +95,7 @@ func TestConstrainedHTTPClientRejectsCommonNameFallbackWhenDisabled(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := constrainedHTTPClient(host, port, "www.privateinternetaccess.com", pool, 5*time.Second, false)
+	client := constrainedHTTPClient(host, port, "www.privateinternetaccess.com", pool, 5*time.Second, false, nil)
 	resp, err := client.Get("https://www.privateinternetaccess.com/")
 	if err == nil {
 		resp.Body.Close()
@@ -120,7 +120,7 @@ func TestConstrainedHTTPClientRejectsWrongRegistrationCommonName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := constrainedHTTPClient(host, port, "Server-11736-3a", pool, 5*time.Second, true)
+	client := constrainedHTTPClient(host, port, "Server-11736-3a", pool, 5*time.Second, true, nil)
 	resp, err := client.Get("https://Server-11736-3a/")
 	if err == nil {
 		resp.Body.Close()
@@ -148,7 +148,7 @@ func TestConstrainedHTTPClientRejectsCommonNameFallbackWhenSANsArePresent(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := constrainedHTTPClient(host, port, "Server-11519-4a", pool, 5*time.Second, true)
+	client := constrainedHTTPClient(host, port, "Server-11519-4a", pool, 5*time.Second, true, nil)
 	resp, err := client.Get("https://Server-11519-4a/")
 	if err == nil {
 		resp.Body.Close()
@@ -177,7 +177,7 @@ func TestConstrainedHTTPClientRejectsUntrustedRegistrationCA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := constrainedHTTPClient(host, port, "Server-11736-3a", pool, 5*time.Second, true)
+	client := constrainedHTTPClient(host, port, "Server-11736-3a", pool, 5*time.Second, true, nil)
 	resp, err := client.Get("https://Server-11736-3a/")
 	if err == nil {
 		resp.Body.Close()
@@ -206,7 +206,7 @@ func TestConstrainedHTTPClientDoesNotRetryFailedDial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := constrainedHTTPClient(host, port, "example.privateinternetaccess.com", pool, 5*time.Second, false)
+	client := constrainedHTTPClient(host, port, "example.privateinternetaccess.com", pool, 5*time.Second, false, nil)
 	resp, err := client.Get("https://example.privateinternetaccess.com/")
 	if err == nil {
 		resp.Body.Close()

@@ -42,6 +42,7 @@ You can now use `wg0.conf` to connect using your favorite WireGuard client.
 | `--regional-ca-fd` | | | Read the constrained regional API CA bundle from an inherited file descriptor |
 | `--config-fd` | | | Write constrained WireGuard config output to an inherited file descriptor |
 | `--result-fd` | | | Write constrained result JSON to an inherited file descriptor |
+| `--socket-mark` | | | Constrained mode only, Linux only: set `SO_MARK` to this non-zero value on every socket the generator opens |
 | `--serverlist-cache` | | | Path to server-list cache file |
 | `--serverlist-cache-ttl` | | `24h` | Max age to use cache without refresh |
 | `--serverlist-cache-max-age` | | `168h` | Max age before cache is treated as invalid |
@@ -81,6 +82,18 @@ duplicate flags. Results are written as bounded JSON to `--result-fd`; on
 failure the result contains `schema`, `status`, `failure_class`, and sometimes
 a bounded non-secret `failure_detail` for coarse diagnostics such as CA bundle,
 certificate chain, or endpoint identity failures.
+
+`--socket-mark <value>` is optional in constrained mode. It sets `SO_MARK` on
+every socket the generator opens - the token request and the key registration
+are the only two - so a launcher's firewall can admit exactly those
+connections. The value is a non-zero 32-bit number in decimal or `0x`
+hexadecimal (for example `--socket-mark 0x10000`). Setting `SO_MARK` needs
+`CAP_NET_ADMIN` (or, from Linux 5.17, `CAP_NET_RAW`); if the kernel refuses it
+the connection is not made and the run fails with `token_request_failed` and `failure_detail` `socket_mark_refused`. An
+invalid value fails with `failure_class` `invalid_invocation` and
+`failure_detail` `socket_mark_invalid`; on a platform without `SO_MARK` the flag
+fails with `socket_mark_unsupported` instead of being ignored. The flag is
+rejected outside constrained mode.
 
 This mode is intentionally not the general CLI interface. It exists for a
 separately reviewed launcher that supplies the plan, credentials, CA bundles,
