@@ -39,7 +39,7 @@ func TestConstrainedHTTPClientDialsSuppliedIPv4WithoutDNSProxyOrHTTP2(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := constrainedHTTPClient(host, port, "example.privateinternetaccess.com", pool, 5*time.Second)
+	client := constrainedHTTPClient(host, port, "example.privateinternetaccess.com", pool, 5*time.Second, false, nil)
 	resp, err := client.Get("https://definitely.invalid.example/")
 	if err != nil {
 		t.Fatalf("client.Get returned error: %v", err)
@@ -53,6 +53,141 @@ func TestConstrainedHTTPClientDialsSuppliedIPv4WithoutDNSProxyOrHTTP2(t *testing
 	}
 	if got := server.AcceptCount(); got != 1 {
 		t.Fatalf("accepted connections = %d, want 1", got)
+	}
+}
+
+func TestConstrainedHTTPClientAcceptsRealPIARegistrationCommonName(t *testing.T) {
+	cert, pool := testServerCertificateWithoutDNSName(t, "Server-11736-3a")
+	server := testTLSServer(t, cert, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+
+	host, rawPort, err := net.SplitHostPort(server.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := constrainedHTTPClient(host, port, "Server-11736-3a", pool, 5*time.Second, true, nil)
+	resp, err := client.Get("https://Server-11736-3a/")
+	if err != nil {
+		t.Fatalf("client.Get returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestConstrainedHTTPClientRejectsCommonNameFallbackWhenDisabled(t *testing.T) {
+	cert, pool := testServerCertificateWithoutDNSName(t, "www.privateinternetaccess.com")
+	server := testTLSServer(t, cert, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("request should not reach handler")
+	}))
+
+	host, rawPort, err := net.SplitHostPort(server.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := constrainedHTTPClient(host, port, "www.privateinternetaccess.com", pool, 5*time.Second, false, nil)
+	resp, err := client.Get("https://www.privateinternetaccess.com/")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("client.Get returned nil error, want hostname verification failure")
+	}
+	if !isConstrainedTrustError(err) {
+		t.Fatalf("error = %T %[1]v, want constrained trust error", err)
+	}
+}
+
+func TestConstrainedHTTPClientRejectsWrongRegistrationCommonName(t *testing.T) {
+	cert, pool := testServerCertificateWithoutDNSName(t, "Server-11519-4a")
+	server := testTLSServer(t, cert, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("request should not reach handler")
+	}))
+
+	host, rawPort, err := net.SplitHostPort(server.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := constrainedHTTPClient(host, port, "Server-11736-3a", pool, 5*time.Second, true, nil)
+	resp, err := client.Get("https://Server-11736-3a/")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("client.Get returned nil error, want registration identity failure")
+	}
+	if !isConstrainedTrustError(err) {
+		t.Fatalf("error = %T %[1]v, want constrained trust error", err)
+	}
+	if detail := constrainedTrustDetail(err); detail != "endpoint_identity" {
+		t.Fatalf("trust detail = %q, want endpoint_identity", detail)
+	}
+}
+
+func TestConstrainedHTTPClientRejectsCommonNameFallbackWhenSANsArePresent(t *testing.T) {
+	cert, pool := testServerCertificateWithOptions(t, "Server-11736-3a", true)
+	server := testTLSServer(t, cert, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("request should not reach handler")
+	}))
+
+	host, rawPort, err := net.SplitHostPort(server.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := constrainedHTTPClient(host, port, "Server-11519-4a", pool, 5*time.Second, true, nil)
+	resp, err := client.Get("https://Server-11519-4a/")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("client.Get returned nil error, want SAN identity failure")
+	}
+	if !isConstrainedTrustError(err) {
+		t.Fatalf("error = %T %[1]v, want constrained trust error", err)
+	}
+	if detail := constrainedTrustDetail(err); detail != "endpoint_identity" {
+		t.Fatalf("trust detail = %q, want endpoint_identity", detail)
+	}
+}
+
+func TestConstrainedHTTPClientRejectsUntrustedRegistrationCA(t *testing.T) {
+	cert, _ := testServerCertificateWithoutDNSName(t, "Server-11736-3a")
+	_, pool := testServerCertificateWithoutDNSName(t, "Server-11736-3a")
+	server := testTLSServer(t, cert, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("request should not reach handler")
+	}))
+
+	host, rawPort, err := net.SplitHostPort(server.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := constrainedHTTPClient(host, port, "Server-11736-3a", pool, 5*time.Second, true, nil)
+	resp, err := client.Get("https://Server-11736-3a/")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("client.Get returned nil error, want untrusted CA failure")
+	}
+	if !isConstrainedTrustError(err) {
+		t.Fatalf("error = %T %[1]v, want constrained trust error", err)
+	}
+	if detail := constrainedTrustDetail(err); detail != "ca_chain" {
+		t.Fatalf("trust detail = %q, want ca_chain", detail)
 	}
 }
 
@@ -71,7 +206,7 @@ func TestConstrainedHTTPClientDoesNotRetryFailedDial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := constrainedHTTPClient(host, port, "example.privateinternetaccess.com", pool, 5*time.Second)
+	client := constrainedHTTPClient(host, port, "example.privateinternetaccess.com", pool, 5*time.Second, false, nil)
 	resp, err := client.Get("https://example.privateinternetaccess.com/")
 	if err == nil {
 		resp.Body.Close()
@@ -144,6 +279,14 @@ func (l *countingListener) Accept() (net.Conn, error) {
 }
 
 func testServerCertificate(t *testing.T, serverName string) (tls.Certificate, *x509.CertPool) {
+	return testServerCertificateWithOptions(t, serverName, true)
+}
+
+func testServerCertificateWithoutDNSName(t *testing.T, commonName string) (tls.Certificate, *x509.CertPool) {
+	return testServerCertificateWithOptions(t, commonName, false)
+}
+
+func testServerCertificateWithOptions(t *testing.T, serverName string, includeDNSName bool) (tls.Certificate, *x509.CertPool) {
 	t.Helper()
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -170,11 +313,13 @@ func testServerCertificate(t *testing.T, serverName string) (tls.Certificate, *x
 	serverTemplate := x509.Certificate{
 		SerialNumber: big.NewInt(2),
 		Subject:      pkix.Name{CommonName: serverName},
-		DNSNames:     []string{serverName},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	if includeDNSName {
+		serverTemplate.DNSNames = []string{serverName}
 	}
 	serverDER, err := x509.CreateCertificate(rand.Reader, &serverTemplate, &caTemplate, &serverKey.PublicKey, caKey)
 	if err != nil {

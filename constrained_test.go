@@ -59,7 +59,7 @@ func TestRawConstrainedRequested(t *testing.T) {
 }
 
 func TestParseRawConstrainedArgsAcceptsOnlyCompleteConstrainedFDSet(t *testing.T) {
-	values, err := parseRawConstrainedArgs([]string{
+	values, _, err := parseRawConstrainedArgs([]string{
 		"--constrained-plan-fd", "3",
 		"--credentials-fd=4",
 		"--public-ca-fd", "5",
@@ -106,7 +106,7 @@ func TestParseRawConstrainedArgsRejectsBeforeCLIHandling(t *testing.T) {
 	}
 	for name, args := range tests {
 		t.Run(name, func(t *testing.T) {
-			if _, err := parseRawConstrainedArgs(args); err == nil {
+			if _, _, err := parseRawConstrainedArgs(args); err == nil {
 				t.Fatal("expected parse error")
 			}
 		})
@@ -170,6 +170,18 @@ func TestParseConstrainedPlanAcceptsCompletePlan(t *testing.T) {
 	}
 }
 
+func TestParseConstrainedPlanAcceptsRealPIARegistrationCommonName(t *testing.T) {
+	body := `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"158.173.66.79","tls_common_name":"Server-11736-3a"},"excluded_wireguard_endpoint":{"ipv4":"158.173.66.79","udp_port":1337}}`
+
+	plan, err := parseConstrainedPlan([]byte(body))
+	if err != nil {
+		t.Fatalf("parseConstrainedPlan returned error: %v", err)
+	}
+	if plan.RegistrationCandidate.TLSCommonName != "Server-11736-3a" {
+		t.Fatalf("candidate CN = %q, want real PIA common name", plan.RegistrationCandidate.TLSCommonName)
+	}
+}
+
 func TestParseConstrainedPlanRejectsStrictJSONViolations(t *testing.T) {
 	tests := map[string]string{
 		"missing schema":   `{"region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"example.privateinternetaccess.com"}}`,
@@ -181,6 +193,12 @@ func TestParseConstrainedPlanRejectsStrictJSONViolations(t *testing.T) {
 		"bad region":       `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus/perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"example.privateinternetaccess.com"}}`,
 		"bad token ip":     `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"2001:db8::1","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"example.privateinternetaccess.com"}}`,
 		"bad cn":           `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"127.0.0.1"}}`,
+		"empty cn":         `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":""}}`,
+		"space cn":         `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"Server 11736"}}`,
+		"slash cn":         `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"Server/11736"}}`,
+		"colon cn":         `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"Server:11736"}}`,
+		"at cn":            `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"Server@11736"}}`,
+		"overlong cn":      `{"schema":"pia-wg-config-constrained-plan/v1","region":"aus_perth","port_forwarding":true,"token_destination_ipv4":"203.0.113.10","registration_candidate":{"ipv4":"203.0.113.20","tls_common_name":"` + strings.Repeat("a", 254) + `"}}`,
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -262,6 +280,59 @@ func TestParseConstrainedAddKeyRejectsStrictJSONViolations(t *testing.T) {
 	}
 }
 
+func TestParseConstrainedAddKeyDetailsStrictJSONViolations(t *testing.T) {
+	body := validAddKeyJSON(t)
+	tests := map[string]string{
+		"duplicate": strings.Replace(body, `"status":"OK"`, `"status":"OK","status":"OK"`, 1),
+		"trailing":  body + " ",
+	}
+	for name, raw := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, detail := parseConstrainedAddKeyDetailed([]byte(raw)); detail != detailAddKeyJSONParseFailed {
+				t.Fatalf("detail = %q, want %q", detail, detailAddKeyJSONParseFailed)
+			}
+		})
+	}
+
+	unknown := strings.Replace(body, `"dns_servers":["1.1.1.1"]`, `"dns_servers":["1.1.1.1"],"extra":true`, 1)
+	if _, detail := parseConstrainedAddKeyDetailed([]byte(unknown)); detail != detailAddKeyUnexpectedField {
+		t.Fatalf("unknown detail = %q, want %q", detail, detailAddKeyUnexpectedField)
+	}
+
+	missing := strings.Replace(body, `,"dns_servers":["1.1.1.1"]`, ``, 1)
+	if _, detail := parseConstrainedAddKeyDetailed([]byte(missing)); detail != detailAddKeyMissingField {
+		t.Fatalf("missing detail = %q, want %q", detail, detailAddKeyMissingField)
+	}
+
+	decodeFailure := strings.Replace(body, `"server_port":51820`, `"server_port":"51820"`, 1)
+	if _, detail := parseConstrainedAddKeyDetailed([]byte(decodeFailure)); detail != detailAddKeyFieldDecodeFailed {
+		t.Fatalf("decode detail = %q, want %q", detail, detailAddKeyFieldDecodeFailed)
+	}
+}
+
+func TestParseConstrainedTokenDetails(t *testing.T) {
+	tests := map[string]struct {
+		raw    string
+		detail string
+	}{
+		"parse failure":      {raw: `not json`, detail: detailTokenJSONParseFailed},
+		"unexpected field":   {raw: `{"token":"abc","extra":true}`, detail: detailTokenUnexpectedField},
+		"missing field":      {raw: `{}`, detail: detailTokenMissingField},
+		"invalid token type": {raw: `{"token":123}`, detail: detailTokenInvalidToken},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, detail := parseConstrainedTokenDetailed([]byte(tt.raw)); detail != tt.detail {
+				t.Fatalf("detail = %q, want %q", detail, tt.detail)
+			}
+		})
+	}
+
+	if token, detail := parseConstrainedTokenDetailed([]byte(`{"token":"abc"}`)); token != "abc" || detail != "" {
+		t.Fatalf("token/detail = %q/%q, want abc/empty", token, detail)
+	}
+}
+
 func TestValidateConstrainedAddKey(t *testing.T) {
 	plan, err := parseConstrainedPlan([]byte(validConstrainedPlanJSON()))
 	if err != nil {
@@ -269,23 +340,50 @@ func TestValidateConstrainedAddKey(t *testing.T) {
 	}
 	publicKey := testWGPublicKey(t)
 	result := validAddKeyResult(t, publicKey)
-	if class := validateConstrainedAddKey(plan, result, publicKey); class != "" {
-		t.Fatalf("validateConstrainedAddKey class = %s", class)
+	if failure := validateConstrainedAddKey(plan, result, publicKey); !failure.empty() {
+		t.Fatalf("validateConstrainedAddKey failure = %+v", failure)
 	}
+
+	t.Run("accepts bare ipv4 peer ip", func(t *testing.T) {
+		legacy := result
+		legacy.PeerIP = "10.0.0.2"
+		if failure := validateConstrainedAddKey(plan, legacy, publicKey); !failure.empty() {
+			t.Fatalf("validateConstrainedAddKey failure = %+v", failure)
+		}
+	})
 
 	t.Run("requires port forward vip", func(t *testing.T) {
 		bad := result
 		bad.ServerVIP = ""
-		if class := validateConstrainedAddKey(plan, bad, publicKey); class != classResponseInvalid {
-			t.Fatalf("class = %s", class)
+		if failure := validateConstrainedAddKey(plan, bad, publicKey); failure.class != classResponseInvalid || failure.detail != detailAddKeyInvalidServerVIP {
+			t.Fatalf("failure = %+v, want response_invalid/%s", failure, detailAddKeyInvalidServerVIP)
+		}
+	})
+
+	t.Run("rejects invalid peer ip", func(t *testing.T) {
+		tests := []string{"", "not-an-ip", "2001:db8::1", "10.0.0.2/not-cidr"}
+		for _, peerIP := range tests {
+			bad := result
+			bad.PeerIP = peerIP
+			if failure := validateConstrainedAddKey(plan, bad, publicKey); failure.class != classResponseInvalid || failure.detail != detailAddKeyInvalidPeerIP {
+				t.Fatalf("peer_ip %q failure = %+v, want response_invalid/%s", peerIP, failure, detailAddKeyInvalidPeerIP)
+			}
 		}
 	})
 
 	t.Run("rejects peer public key mismatch", func(t *testing.T) {
 		bad := result
 		bad.PeerPubKey = testWGPublicKey(t)
-		if class := validateConstrainedAddKey(plan, bad, publicKey); class != classResponseInvalid {
-			t.Fatalf("class = %s", class)
+		if failure := validateConstrainedAddKey(plan, bad, publicKey); failure.class != classResponseInvalid || failure.detail != detailAddKeyInvalidPeerPubKey {
+			t.Fatalf("failure = %+v, want response_invalid/%s", failure, detailAddKeyInvalidPeerPubKey)
+		}
+	})
+
+	t.Run("rejects invalid dns", func(t *testing.T) {
+		bad := result
+		bad.DNSServers = []string{"not-an-ip"}
+		if failure := validateConstrainedAddKey(plan, bad, publicKey); failure.class != classResponseInvalid || failure.detail != detailAddKeyInvalidDNS {
+			t.Fatalf("failure = %+v, want response_invalid/%s", failure, detailAddKeyInvalidDNS)
 		}
 	})
 
@@ -293,8 +391,8 @@ func TestValidateConstrainedAddKey(t *testing.T) {
 		reused := result
 		reused.ServerIP = plan.ExcludedWireguardEndpoint.IPv4
 		reused.ServerPort = plan.ExcludedWireguardEndpoint.UDPPort
-		if class := validateConstrainedAddKey(plan, reused, publicKey); class != "" {
-			t.Fatalf("validation class before reuse check = %s", class)
+		if failure := validateConstrainedAddKey(plan, reused, publicKey); !failure.empty() {
+			t.Fatalf("validation failure before reuse check = %+v", failure)
 		}
 		if !(plan.ExcludedWireguardEndpointSet &&
 			plan.ExcludedWireguardEndpoint.IPv4 == reused.ServerIP &&
@@ -302,6 +400,41 @@ func TestValidateConstrainedAddKey(t *testing.T) {
 			t.Fatal("reuse condition was not detected")
 		}
 	})
+}
+
+func TestConstrainedFailureDetailsAreSafeConstants(t *testing.T) {
+	details := []string{
+		detailTokenHTTPStatus,
+		detailTokenBodyReadFailed,
+		detailTokenBodyTooLarge,
+		detailTokenJSONParseFailed,
+		detailTokenUnexpectedField,
+		detailTokenMissingField,
+		detailTokenInvalidToken,
+		detailAddKeyHTTPStatus,
+		detailAddKeyBodyReadFailed,
+		detailAddKeyBodyTooLarge,
+		detailAddKeyJSONParseFailed,
+		detailAddKeyUnexpectedField,
+		detailAddKeyMissingField,
+		detailAddKeyFieldDecodeFailed,
+		detailAddKeyInvalidStatus,
+		detailAddKeyInvalidServerKey,
+		detailAddKeyInvalidServerPort,
+		detailAddKeyInvalidServerIP,
+		detailAddKeyInvalidServerVIP,
+		detailAddKeyInvalidPeerIP,
+		detailAddKeyInvalidPeerPubKey,
+		detailAddKeyInvalidDNS,
+		detailSocketMarkInvalid,
+		detailSocketMarkUnsupported,
+		detailSocketMarkRefused,
+	}
+	for _, detail := range details {
+		if got := validConstrainedFailureDetail(detail); got != detail {
+			t.Fatalf("detail %q sanitized to %q", detail, got)
+		}
+	}
 }
 
 func TestRenderConstrainedConfigUsesValidatedEndpointPort(t *testing.T) {
@@ -322,6 +455,15 @@ func TestRenderConstrainedConfigUsesValidatedEndpointPort(t *testing.T) {
 	}
 	if strings.Contains(config, ":1337") {
 		t.Fatalf("config used hardcoded registration port:\n%s", config)
+	}
+
+	result.PeerIP = "10.0.0.2"
+	config, err = renderConstrainedConfig(privateKey.String(), result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(config, "Address = 10.0.0.2/32") {
+		t.Fatalf("config did not normalize bare peer IPv4:\n%s", config)
 	}
 }
 
@@ -405,6 +547,7 @@ func constrainedCLIContext(t *testing.T, args ...string) *cli.Context {
 		&cli.IntFlag{Name: "regional-ca-fd"},
 		&cli.IntFlag{Name: "config-fd"},
 		&cli.IntFlag{Name: "result-fd"},
+		&cli.StringFlag{Name: "socket-mark"},
 	}
 	for _, cliFlag := range flags {
 		if err := cliFlag.Apply(set); err != nil {

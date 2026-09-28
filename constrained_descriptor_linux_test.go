@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	cli "github.com/urfave/cli/v2"
 )
@@ -20,6 +21,22 @@ func TestValidateConstrainedDescriptorAcceptsPipeDirection(t *testing.T) {
 	}
 	if err := validateConstrainedDescriptor(writer, constrainedFDWrite); err != nil {
 		t.Fatalf("write pipe validation returned error: %v", err)
+	}
+}
+
+func TestConstrainedDeadlineHelpersTolerateNoDeadlinePipes(t *testing.T) {
+	reader, writer := testPipe(t)
+	if err := reader.SetReadDeadline(time.Now().Add(time.Second)); err == nil {
+		t.Skip("pipe deadlines are supported in this environment")
+	}
+	if err := writer.SetWriteDeadline(time.Now().Add(time.Second)); err == nil {
+		t.Skip("pipe deadlines are supported in this environment")
+	}
+	if err := setConstrainedReadDeadline(reader, time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("read deadline helper rejected no-deadline pipe: %v", err)
+	}
+	if err := setConstrainedWriteDeadline(writer, time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("write deadline helper rejected no-deadline pipe: %v", err)
 	}
 }
 
@@ -78,6 +95,49 @@ func TestWriteInvalidInvocationFailureDoesNotLeakDetails(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "fd") || strings.Contains(string(raw), "descriptor") {
 		t.Fatalf("result leaked invocation details: %s", raw)
+	}
+}
+
+func TestWriteFailureIncludesBoundedFailureDetail(t *testing.T) {
+	reader, writer := testPipe(t)
+	run := constrainedRunner{
+		files: constrainedFiles{resultWriter: writer},
+	}
+
+	err := run.writeFailure(constrainedFailureWithDetail(classInvalidTrust, "endpoint_identity"))
+	var exitErr cli.ExitCoder
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("error = %v, want exit code 1", err)
+	}
+	_ = writer.Close()
+	raw, err := os.ReadFile("/proc/self/fd/" + fdString(reader))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result constrainedFailure
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.FailureClass != string(classInvalidTrust) || result.FailureDetail != "endpoint_identity" {
+		t.Fatalf("failure result = %#v, want invalid_trust endpoint_identity", result)
+	}
+}
+
+func TestConstrainedFailureDetailRejectsUnsafeValues(t *testing.T) {
+	tests := []string{
+		"endpoint identity",
+		"endpoint/identity",
+		"endpoint:identity",
+		"endpoint@identity",
+		strings.Repeat("a", 65),
+	}
+	for _, value := range tests {
+		if got := validConstrainedFailureDetail(value); got != "" {
+			t.Fatalf("detail %q sanitized to %q, want empty", value, got)
+		}
+	}
+	if got := validConstrainedFailureDetail("regional_ca_bundle"); got != "regional_ca_bundle" {
+		t.Fatalf("safe detail sanitized to %q", got)
 	}
 }
 

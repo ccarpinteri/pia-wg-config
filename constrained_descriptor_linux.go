@@ -32,20 +32,20 @@ func validateConstrainedDescriptor(file *os.File, want constrainedFDMode) error 
 		if accessMode != syscall.O_RDONLY && accessMode != syscall.O_RDWR {
 			return fmt.Errorf("descriptor is not readable")
 		}
-		if err := file.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		if err := setConstrainedReadDeadline(file, time.Now().Add(time.Second)); err != nil {
 			return err
 		}
-		if err := file.SetReadDeadline(time.Time{}); err != nil {
+		if err := setConstrainedReadDeadline(file, time.Time{}); err != nil {
 			return err
 		}
 	case constrainedFDWrite:
 		if accessMode != syscall.O_WRONLY && accessMode != syscall.O_RDWR {
 			return fmt.Errorf("descriptor is not writable")
 		}
-		if err := file.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+		if err := setConstrainedWriteDeadline(file, time.Now().Add(time.Second)); err != nil {
 			return err
 		}
-		if err := file.SetWriteDeadline(time.Time{}); err != nil {
+		if err := setConstrainedWriteDeadline(file, time.Time{}); err != nil {
 			return err
 		}
 	default:

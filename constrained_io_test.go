@@ -70,3 +70,15 @@ func TestWriteLimitedFileFailsOnBrokenPipe(t *testing.T) {
 		t.Fatalf("expected broken pipe, got deadline: %v", err)
 	}
 }
+
+func TestUnsupportedDeadlineClassification(t *testing.T) {
+	if !unsupportedDeadline(os.ErrNoDeadline) {
+		t.Fatal("os.ErrNoDeadline was not classified as unsupported")
+	}
+	if !unsupportedDeadline(errors.New("file type does not support deadline")) {
+		t.Fatal("Linux pipe unsupported-deadline error was not classified")
+	}
+	if unsupportedDeadline(errors.New("permission denied")) {
+		t.Fatal("unrelated error was classified as unsupported deadline")
+	}
+}
